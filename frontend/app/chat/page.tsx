@@ -60,35 +60,35 @@ export default function ChatPage() {
   };
 
   return (
-    <div className="chat-page flex min-h-screen flex-col bg-[#0a0a0f]">
+    <div className="chat-page flex min-h-screen flex-col bg-[#04032a]">
       {/* Background gradient and grid */}
       <div
         className="pointer-events-none fixed inset-0 overflow-hidden"
         aria-hidden
       >
-        <div className="absolute -left-[40%] -top-[40%] h-[80%] w-[80%] rounded-full bg-violet-600/15 blur-[120px]" />
-        <div className="absolute -bottom-[30%] -right-[30%] h-[60%] w-[60%] rounded-full bg-indigo-600/10 blur-[100px]" />
+        <div className="absolute -left-[20%] -top-[30%] h-[75%] w-[55%] rounded-full bg-cyan-400/10 blur-[120px]" />
+        <div className="absolute -bottom-[28%] -right-[20%] h-[70%] w-[60%] rounded-full bg-blue-500/20 blur-[130px]" />
         <div
-          className="absolute inset-0 opacity-[0.02]"
+          className="absolute inset-0 opacity-[0.06]"
           style={{
-            backgroundImage: `linear-gradient(rgba(255,255,255,.08) 1px, transparent 1px),
-                              linear-gradient(90deg, rgba(255,255,255,.08) 1px, transparent 1px)`,
-            backgroundSize: "64px 64px",
+            backgroundImage: `linear-gradient(rgba(0,255,255,.11) 1px, transparent 1px),
+                              linear-gradient(90deg, rgba(0,255,255,.11) 1px, transparent 1px)`,
+            backgroundSize: "96px 96px",
           }}
         />
       </div>
 
       {/* Header */}
-      <header className="relative z-10 border-b border-white/[0.06] bg-black/20 backdrop-blur-xl">
+      <header className="relative z-10 border-b border-cyan-300/15 bg-[#05062e]/65 backdrop-blur-xl">
         <div className="mx-auto flex h-16 max-w-3xl items-center justify-between px-4 sm:px-6">
           <a
             href="/"
-            className="text-sm font-medium text-zinc-400 transition-colors hover:text-white"
+            className="text-sm font-medium text-cyan-100/70 transition-colors hover:text-cyan-100"
           >
             ← Home
           </a>
-          <h1 className="font-semibold tracking-tight text-white">
-            Assistant
+          <h1 className="font-semibold tracking-tight text-cyan-100">
+            ACU Smart Assistant
           </h1>
           <div className="w-16" />
         </div>
@@ -99,9 +99,9 @@ export default function ChatPage() {
         <div className="mx-auto w-full max-w-3xl flex-1 overflow-y-auto px-4 py-6 sm:px-6">
           {messages.length === 0 ? (
             <div className="flex min-h-[60vh] flex-col items-center justify-center gap-6 text-center">
-              <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-gradient-to-br from-violet-500/20 to-indigo-600/20 ring-1 ring-white/10">
+              <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-gradient-to-br from-cyan-300/20 to-blue-500/25 ring-1 ring-cyan-300/30">
                 <svg
-                  className="h-10 w-10 text-violet-400"
+                  className="h-10 w-10 text-cyan-300"
                   fill="none"
                   viewBox="0 0 24 24"
                   stroke="currentColor"
@@ -118,21 +118,21 @@ export default function ChatPage() {
                 <p className="text-xl font-medium text-white">
                   Hi, how can I help?
                 </p>
-                <p className="mt-2 max-w-sm text-sm text-zinc-500">
+                <p className="mt-2 max-w-sm text-sm text-cyan-100/70">
                   Type in the box below and press Enter or click Send.
                 </p>
               </div>
               <div className="flex flex-wrap justify-center gap-2">
                 {[
-                  "Suggest a project idea",
-                  "Write a code example",
-                  "Explain a concept",
+                  "Ask for information about Acibadem University",
+                  "Ask about Acibadem University's departments",
+                  "Get information about the Acibadem University campus",
                 ].map((suggestion) => (
                   <button
                     key={suggestion}
                     type="button"
                     onClick={() => setInput(suggestion)}
-                    className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-zinc-300 transition-colors hover:border-violet-500/50 hover:bg-violet-500/10 hover:text-white"
+                    className="rounded-full border border-cyan-300/30 bg-cyan-300/10 px-4 py-2 text-sm text-cyan-100 transition-colors hover:border-cyan-200/60 hover:bg-cyan-300/20 hover:text-white"
                   >
                     {suggestion}
                   </button>
@@ -151,8 +151,8 @@ export default function ChatPage() {
                   <div
                     className={`max-w-[85%] rounded-2xl px-4 py-3 sm:max-w-[75%] ${
                       msg.role === "user"
-                        ? "bg-violet-500/90 text-white shadow-lg shadow-violet-500/25"
-                        : "bg-white/[0.06] text-zinc-100 ring-1 ring-white/10"
+                        ? "bg-cyan-300 text-[#06103d] shadow-lg shadow-cyan-400/30"
+                        : "bg-[#0b1248]/70 text-cyan-50 ring-1 ring-cyan-300/25"
                     }`}
                   >
                     <p className="whitespace-pre-wrap text-[15px] leading-relaxed">
@@ -163,10 +163,10 @@ export default function ChatPage() {
               ))}
               {isLoading && (
                 <div className="flex justify-start animate-fade-in">
-                  <div className="flex items-center gap-2 rounded-2xl bg-white/[0.06] px-4 py-3 ring-1 ring-white/10">
-                    <span className="flex h-2 w-2 animate-bounce rounded-full bg-violet-400 [animation-delay:-0.3s]" />
-                    <span className="flex h-2 w-2 animate-bounce rounded-full bg-violet-400 [animation-delay:-0.15s]" />
-                    <span className="flex h-2 w-2 animate-bounce rounded-full bg-violet-400" />
+                  <div className="flex items-center gap-2 rounded-2xl bg-[#0b1248]/70 px-4 py-3 ring-1 ring-cyan-300/25">
+                    <span className="flex h-2 w-2 animate-bounce rounded-full bg-cyan-300 [animation-delay:-0.3s]" />
+                    <span className="flex h-2 w-2 animate-bounce rounded-full bg-cyan-300 [animation-delay:-0.15s]" />
+                    <span className="flex h-2 w-2 animate-bounce rounded-full bg-cyan-300" />
                   </div>
                 </div>
               )}
@@ -176,7 +176,7 @@ export default function ChatPage() {
         </div>
 
         {/* Input area */}
-        <div className="sticky bottom-0 border-t border-white/[0.06] bg-black/40 px-4 py-4 backdrop-blur-xl sm:px-6">
+        <div className="sticky bottom-0 border-t border-cyan-300/15 bg-[#05062e]/70 px-4 py-4 backdrop-blur-xl sm:px-6">
           <form
             onSubmit={handleSubmit}
             className="mx-auto flex max-w-3xl items-end gap-3"
@@ -194,13 +194,13 @@ export default function ChatPage() {
                 }}
                 placeholder="Type your message..."
                 rows={1}
-                className="chat-input w-full resize-none rounded-2xl border border-white/10 bg-white/5 px-4 py-3.5 pr-12 text-[15px] text-white placeholder-zinc-500 outline-none transition-all focus:border-violet-500/50 focus:bg-white/[0.08] focus:ring-2 focus:ring-violet-500/20"
+                className="chat-input w-full resize-none rounded-2xl border border-cyan-300/25 bg-[#0a1144]/70 px-4 py-3.5 pr-12 text-[15px] text-cyan-50 placeholder-cyan-100/45 outline-none transition-all focus:border-cyan-200/60 focus:bg-[#0d1854]/85 focus:ring-2 focus:ring-cyan-300/30"
                 disabled={isLoading}
               />
               <button
                 type="submit"
                 disabled={!input.trim() || isLoading}
-                className="absolute bottom-2.5 right-2.5 flex h-9 w-9 items-center justify-center rounded-xl bg-violet-500 text-white shadow-lg shadow-violet-500/30 transition-all hover:bg-violet-400 disabled:pointer-events-none disabled:opacity-40"
+                className="absolute bottom-2.5 right-2.5 flex h-9 w-9 items-center justify-center rounded-xl bg-cyan-300 text-[#06103d] shadow-lg shadow-cyan-400/35 transition-all hover:bg-cyan-200 disabled:pointer-events-none disabled:opacity-40"
                 aria-label="Send"
               >
                 <svg

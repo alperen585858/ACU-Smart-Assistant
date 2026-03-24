@@ -2,56 +2,55 @@ import Link from "next/link";
 
 export default function Home() {
   return (
-    <div className="relative flex min-h-screen flex-col overflow-hidden bg-[#06060a] font-sans">
+    <div className="relative flex min-h-screen flex-col overflow-hidden bg-[#04032a] font-sans">
       {/* Background layers */}
       <div className="pointer-events-none absolute inset-0" aria-hidden>
-        <div className="absolute -left-[35%] -top-[50%] h-[100%] w-[90%] rounded-full bg-violet-600/20 blur-[140px] animate-glow-pulse" />
-        <div className="absolute -bottom-[40%] -right-[20%] h-[80%] w-[70%] rounded-full bg-fuchsia-600/15 blur-[120px] animate-float" />
-        <div className="absolute left-1/2 top-1/2 h-[50%] w-[60%] -translate-x-1/2 -translate-y-1/2 rounded-full bg-indigo-600/10 blur-[100px]" />
+        <div className="absolute -left-[18%] -top-[32%] h-[70%] w-[48%] rounded-full bg-cyan-400/10 blur-[120px]" />
+        <div className="absolute -bottom-[32%] -right-[12%] h-[75%] w-[55%] rounded-full bg-blue-500/20 blur-[140px]" />
         <div
-          className="absolute inset-0 opacity-[0.03]"
+          className="absolute inset-0 opacity-[0.06]"
           style={{
-            backgroundImage: `radial-gradient(circle at 1px 1px, rgb(255 255 255 / 0.15) 1px, transparent 0)`,
-            backgroundSize: "48px 48px",
+            backgroundImage: `linear-gradient(rgba(0,255,255,.11) 1px, transparent 1px),
+                              linear-gradient(90deg, rgba(0,255,255,.11) 1px, transparent 1px)`,
+            backgroundSize: "120px 120px",
           }}
         />
         <div
-          className="absolute inset-0 opacity-[0.02]"
+          className="absolute inset-0 opacity-[0.2]"
           style={{
-            backgroundImage: `linear-gradient(rgba(255,255,255,.06) 1px, transparent 1px),
-                              linear-gradient(90deg, rgba(255,255,255,.06) 1px, transparent 1px)`,
-            backgroundSize: "80px 80px",
+            backgroundImage: `radial-gradient(1000px 420px at 18% 24%, rgba(65, 234, 255, 0.18), transparent 70%),
+                              radial-gradient(900px 360px at 82% 84%, rgba(65, 120, 255, 0.25), transparent 72%)`,
           }}
         />
       </div>
 
       <div className="relative z-10 flex min-h-screen flex-col">
         {/* Top bar */}
-        <header className="flex items-center justify-between px-6 py-5 sm:px-8">
-          <span className="font-display text-lg font-semibold tracking-tight text-white">
-            AI Project
+        <header className="mx-auto flex w-full max-w-6xl items-center justify-between px-6 py-6 sm:px-8">
+          <span className="font-display text-lg font-semibold tracking-[0.02em] text-cyan-100">
+            ACU Smart Assistant
           </span>
           <Link
             href="/chat"
-            className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-zinc-300 transition-colors hover:border-violet-500/40 hover:bg-violet-500/10 hover:text-white"
+            className="rounded-full border border-cyan-300/35 bg-cyan-300/12 px-5 py-2 text-sm font-semibold text-cyan-100 transition-all hover:bg-cyan-300/25 hover:text-white"
           >
             Go to chat
           </Link>
         </header>
 
         {/* Hero */}
-        <main className="flex flex-1 flex-col items-center justify-center px-6 pb-24 pt-8 text-center sm:px-8">
-          <p className="font-display mb-4 text-sm font-medium uppercase tracking-[0.2em] text-violet-400/90">
-            AI assistant
+        <main className="mx-auto flex w-full max-w-6xl flex-1 flex-col items-center justify-center px-6 pb-24 pt-8 text-center sm:px-8">
+          <p className="font-display mb-5 text-3xl font-bold uppercase tracking-[0.22em] text-cyan-300">
+            ACU SMART ASSISTANT
           </p>
-          <h1 className="font-display max-w-4xl text-5xl font-extrabold leading-[1.1] tracking-tight text-white sm:text-6xl md:text-7xl">
+          <h1 className="font-display max-w-4xl text-5xl font-extrabold leading-[1.08] tracking-tight text-white sm:text-6xl md:text-7xl">
             Ask your questions.
             <br />
-            <span className="bg-gradient-to-r from-violet-400 via-fuchsia-400 to-violet-400 bg-clip-text text-transparent">
+            <span className="bg-gradient-to-r from-cyan-300 via-cyan-200 to-blue-300 bg-clip-text text-transparent">
               Get answers.
             </span>
           </h1>
-          <p className="mt-6 max-w-xl text-lg leading-relaxed text-zinc-400">
+          <p className="mt-6 max-w-2xl text-lg leading-relaxed text-cyan-50/85">
             Instant answers, code examples, and ideas with our text-based chat
             assistant. Try it free.
           </p>
@@ -59,7 +58,7 @@ export default function Home() {
           {/* CTA */}
           <Link
             href="/chat"
-            className="group mt-10 inline-flex items-center gap-3 rounded-2xl bg-white px-8 py-4 text-base font-semibold text-black shadow-[0_0_0_1px_rgba(255,255,255,0.1),0_2px_4px_rgba(0,0,0,0.2)] transition-all hover:bg-zinc-100 hover:shadow-[0_0_0_1px_rgba(255,255,255,0.2),0_8px_24px_-8px_rgba(139,92,246,0.4)] active:scale-[0.98]"
+            className="group mt-10 inline-flex items-center gap-3 rounded-full bg-cyan-300 px-10 py-4 text-base font-bold uppercase tracking-[0.14em] text-[#091240] shadow-[0_0_0_1px_rgba(56,245,255,0.45),0_10px_30px_-14px_rgba(56,245,255,0.95)] transition-all hover:-translate-y-0.5 hover:bg-cyan-200 active:scale-[0.98]"
           >
             Start chatting
             <svg
@@ -78,26 +77,26 @@ export default function Home() {
           </Link>
 
           {/* Features */}
-          <ul className="mt-14 flex flex-wrap items-center justify-center gap-x-8 gap-y-3 text-sm text-zinc-500">
+          <ul className="mt-14 flex flex-wrap items-center justify-center gap-x-8 gap-y-3 text-sm text-cyan-100/75">
             <li className="flex items-center gap-2">
-              <span className="flex h-1.5 w-1.5 rounded-full bg-emerald-500" />
+              <span className="flex h-1.5 w-1.5 rounded-full bg-cyan-300" />
               Instant answers
             </li>
             <li className="flex items-center gap-2">
-              <span className="flex h-1.5 w-1.5 rounded-full bg-violet-500" />
+              <span className="flex h-1.5 w-1.5 rounded-full bg-cyan-200" />
               Code & explanation
             </li>
             <li className="flex items-center gap-2">
-              <span className="flex h-1.5 w-1.5 rounded-full bg-fuchsia-500" />
+              <span className="flex h-1.5 w-1.5 rounded-full bg-blue-300" />
               Free to use
             </li>
           </ul>
         </main>
 
         {/* Footer */}
-        <footer className="relative z-10 border-t border-white/5 px-6 py-4 sm:px-8">
-          <p className="text-center text-xs text-zinc-600">
-            AI Project · Chat assistant
+        <footer className="relative z-10 border-t border-cyan-300/15 px-6 py-4 sm:px-8">
+          <p className="text-center text-xs text-cyan-100/50">
+            ACU Smart Assistant · Chat assistant
           </p>
         </footer>
       </div>

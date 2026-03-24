@@ -19,7 +19,7 @@ const syne = Syne({
 });
 
 export const metadata: Metadata = {
-  title: "AI Project",
+  title: "ACU Smart Assistant",
   description: "AI-powered chat assistant",
 };
 
