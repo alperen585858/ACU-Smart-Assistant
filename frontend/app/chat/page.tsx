@@ -88,12 +88,6 @@ export default function ChatPage() {
           <div className="px-6 py-4 sm:px-8">
             <div className="flex items-center justify-between gap-4">
               <div className="flex items-center gap-3">
-                <a
-                  href="/"
-                  className="text-sm font-medium text-[#0b2e3b]/75 transition-colors hover:text-[#0b2e3b]"
-                >
-                  ← Home
-                </a>
                 <div className="h-7 w-px bg-white/40" />
                 <h1 className="font-semibold text-[#0b2e3b]">
                   ACU Smart Assistant
