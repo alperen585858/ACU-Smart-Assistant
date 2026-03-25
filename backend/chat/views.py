@@ -14,12 +14,13 @@ from .models import ChatMessage, ChatSession
 
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "phi3:mini")
-OLLAMA_NUM_PREDICT = int(os.environ.get("OLLAMA_NUM_PREDICT", "256"))
-OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "2048"))
-OLLAMA_HTTP_TIMEOUT = int(os.environ.get("OLLAMA_HTTP_TIMEOUT", "180"))
+# CPU’da hız: düşük değer = daha kısa cevap, daha az bekleme (.env ile yükseltilebilir)
+OLLAMA_NUM_PREDICT = int(os.environ.get("OLLAMA_NUM_PREDICT", "96"))
+OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "1024"))
+OLLAMA_HTTP_TIMEOUT = int(os.environ.get("OLLAMA_HTTP_TIMEOUT", "120"))
 
 SYSTEM_TEXT = (
-    "Yanıtları kısa ve net tut; gereksiz uzatma, birkaç cümle yeter."
+    "Sadece Türkçe cevap ver. En fazla 2–3 kısa cümle; liste ve uzun açıklama yazma."
 )
 
 
