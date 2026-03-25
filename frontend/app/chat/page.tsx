@@ -60,167 +60,184 @@ export default function ChatPage() {
   };
 
   return (
-    <div className="chat-page flex min-h-screen flex-col bg-[#04032a]">
-      {/* Background gradient and grid */}
+    <div className="relative min-h-screen overflow-hidden">
+      {/* Top-left logo */}
+      <a
+        href="/"
+        aria-label="Go to Home"
+        className="fixed left-5 top-5 z-30 flex items-center"
+      >
+        <img src="/logo.svg" alt="ACU" className="h-9 w-auto" />
+      </a>
+
+      {/* Background */}
       <div
         className="pointer-events-none fixed inset-0 overflow-hidden"
         aria-hidden
       >
-        <div className="absolute -left-[20%] -top-[30%] h-[75%] w-[55%] rounded-full bg-cyan-400/10 blur-[120px]" />
-        <div className="absolute -bottom-[28%] -right-[20%] h-[70%] w-[60%] rounded-full bg-blue-500/20 blur-[130px]" />
         <div
-          className="absolute inset-0 opacity-[0.06]"
-          style={{
-            backgroundImage: `linear-gradient(rgba(0,255,255,.11) 1px, transparent 1px),
-                              linear-gradient(90deg, rgba(0,255,255,.11) 1px, transparent 1px)`,
-            backgroundSize: "96px 96px",
-          }}
+          className="absolute inset-0 bg-cover bg-center bg-no-repeat"
+          style={{ backgroundImage: `url("/kampus.png.webp")` }}
         />
+        <div className="absolute inset-0 bg-[#04032a]/65" />
       </div>
 
-      {/* Header */}
-      <header className="relative z-10 border-b border-cyan-300/15 bg-[#05062e]/65 backdrop-blur-xl">
-        <div className="mx-auto flex h-16 max-w-3xl items-center justify-between px-4 sm:px-6">
-          <a
-            href="/"
-            className="text-sm font-medium text-cyan-100/70 transition-colors hover:text-cyan-100"
-          >
-            ← Home
-          </a>
-          <h1 className="font-semibold tracking-tight text-cyan-100">
-            ACU Smart Assistant
-          </h1>
-          <div className="w-16" />
-        </div>
-      </header>
-
-      {/* Message area */}
-      <main className="relative z-10 flex flex-1 flex-col">
-        <div className="mx-auto w-full max-w-3xl flex-1 overflow-y-auto px-4 py-6 sm:px-6">
-          {messages.length === 0 ? (
-            <div className="flex min-h-[60vh] flex-col items-center justify-center gap-6 text-center">
-              <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-gradient-to-br from-cyan-300/20 to-blue-500/25 ring-1 ring-cyan-300/30">
-                <svg
-                  className="h-10 w-10 text-cyan-300"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={1.5}
+      {/* Center card */}
+      <div className="relative z-10 flex min-h-screen items-center justify-center px-4 py-10">
+        <div className="w-full max-w-3xl overflow-hidden rounded-3xl border border-white/30 bg-white/75 backdrop-blur-xl shadow-[0_20px_60px_rgba(0,0,0,0.35)]">
+          <div className="px-6 py-4 sm:px-8">
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <a
+                  href="/"
+                  className="text-sm font-medium text-[#0b2e3b]/75 transition-colors hover:text-[#0b2e3b]"
                 >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 01-2.555-.337A5.972 5.972 0 015.41 20.97a5.969 5.969 0 01-.474-.065 4.48 4.48 0 00.978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z"
-                  />
-                </svg>
+                  ← Home
+                </a>
+                <div className="h-7 w-px bg-white/40" />
+                <h1 className="font-semibold text-[#0b2e3b]">
+                  ACU Smart Assistant
+                </h1>
               </div>
-              <div>
-                <p className="text-xl font-medium text-white">
-                  Hi, how can I help?
-                </p>
-                <p className="mt-2 max-w-sm text-sm text-cyan-100/70">
-                  Type in the box below and press Enter or click Send.
-                </p>
-              </div>
-              <div className="flex flex-wrap justify-center gap-2">
-                {[
-                  "Ask for information about Acibadem University",
-                  "Ask about Acibadem University's departments",
-                  "Get information about the Acibadem University campus",
-                ].map((suggestion) => (
-                  <button
-                    key={suggestion}
-                    type="button"
-                    onClick={() => setInput(suggestion)}
-                    className="rounded-full border border-cyan-300/30 bg-cyan-300/10 px-4 py-2 text-sm text-cyan-100 transition-colors hover:border-cyan-200/60 hover:bg-cyan-300/20 hover:text-white"
-                  >
-                    {suggestion}
-                  </button>
-                ))}
+              <div className="hidden text-xs font-medium text-[#0b2e3b]/60 sm:block">
+                Campus knowledge chat
               </div>
             </div>
-          ) : (
-            <div className="space-y-6">
-              {messages.map((msg) => (
-                <div
-                  key={msg.id}
-                  className={`flex animate-fade-in ${
-                    msg.role === "user" ? "justify-end" : "justify-start"
-                  }`}
-                >
-                  <div
-                    className={`max-w-[85%] rounded-2xl px-4 py-3 sm:max-w-[75%] ${
-                      msg.role === "user"
-                        ? "bg-cyan-300 text-[#06103d] shadow-lg shadow-cyan-400/30"
-                        : "bg-[#0b1248]/70 text-cyan-50 ring-1 ring-cyan-300/25"
-                    }`}
-                  >
-                    <p className="whitespace-pre-wrap text-[15px] leading-relaxed">
-                      {msg.content}
+          </div>
+
+          <div className="h-px bg-white/40" />
+
+          <div className="flex h-[80vh] min-h-[560px] flex-col">
+            {/* Messages */}
+            <main className="flex-1 overflow-y-auto px-4 py-6 sm:px-8">
+              {messages.length === 0 ? (
+                <div className="flex h-full min-h-[52vh] flex-col items-center justify-center gap-5 text-center">
+                  <div className="flex h-20 w-20 items-center justify-center rounded-3xl bg-gradient-to-br from-cyan-500/20 to-blue-500/15 ring-1 ring-white/40">
+                    <svg
+                      className="h-10 w-10 text-cyan-600"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={1.5}
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 01-2.555-.337A5.972 5.972 0 015.41 20.97a5.969 5.969 0 01-.474-.065 4.48 4.48 0 00.978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z"
+                      />
+                    </svg>
+                  </div>
+
+                  <div>
+                    <p className="text-xl font-semibold text-[#0b2e3b]">
+                      Hi, how can I help?
+                    </p>
+                    <p className="mt-2 max-w-sm text-sm text-[#0b2e3b]/65">
+                      Type in the box below and press Enter or click Send.
                     </p>
                   </div>
-                </div>
-              ))}
-              {isLoading && (
-                <div className="flex justify-start animate-fade-in">
-                  <div className="flex items-center gap-2 rounded-2xl bg-[#0b1248]/70 px-4 py-3 ring-1 ring-cyan-300/25">
-                    <span className="flex h-2 w-2 animate-bounce rounded-full bg-cyan-300 [animation-delay:-0.3s]" />
-                    <span className="flex h-2 w-2 animate-bounce rounded-full bg-cyan-300 [animation-delay:-0.15s]" />
-                    <span className="flex h-2 w-2 animate-bounce rounded-full bg-cyan-300" />
+
+                  <div className="flex flex-wrap justify-center gap-2">
+                    {[
+                      "Ask for information about Acibadem University",
+                      "Ask about Acibadem University's departments",
+                      "Get information about the Acibadem University campus",
+                    ].map((suggestion) => (
+                      <button
+                        key={suggestion}
+                        type="button"
+                        onClick={() => setInput(suggestion)}
+                        className="rounded-full border border-white/40 bg-white/40 px-4 py-2 text-sm text-[#0b2e3b]/80 transition-colors hover:bg-white/65"
+                      >
+                        {suggestion}
+                      </button>
+                    ))}
                   </div>
                 </div>
-              )}
-              <div ref={messagesEndRef} />
-            </div>
-          )}
-        </div>
+              ) : (
+                <div className="space-y-4">
+                  {messages.map((msg) => (
+                    <div
+                      key={msg.id}
+                      className={`flex animate-fade-in ${
+                        msg.role === "user" ? "justify-end" : "justify-start"
+                      }`}
+                    >
+                      <div
+                        className={`max-w-[85%] rounded-3xl px-4 py-3 sm:max-w-[75%] ${
+                          msg.role === "user"
+                            ? "bg-cyan-600 text-white shadow-lg shadow-cyan-600/20"
+                            : "bg-white/65 text-[#0b2e3b] ring-1 ring-white/45"
+                        }`}
+                      >
+                        <p className="whitespace-pre-wrap text-[15px] leading-relaxed">
+                          {msg.content}
+                        </p>
+                      </div>
+                    </div>
+                  ))}
 
-        {/* Input area */}
-        <div className="sticky bottom-0 border-t border-cyan-300/15 bg-[#05062e]/70 px-4 py-4 backdrop-blur-xl sm:px-6">
-          <form
-            onSubmit={handleSubmit}
-            className="mx-auto flex max-w-3xl items-end gap-3"
-          >
-            <div className="relative flex-1">
-              <textarea
-                ref={textareaRef}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    handleSubmit(e);
-                  }
-                }}
-                placeholder="Type your message..."
-                rows={1}
-                className="chat-input w-full resize-none rounded-2xl border border-cyan-300/25 bg-[#0a1144]/70 px-4 py-3.5 pr-12 text-[15px] text-cyan-50 placeholder-cyan-100/45 outline-none transition-all focus:border-cyan-200/60 focus:bg-[#0d1854]/85 focus:ring-2 focus:ring-cyan-300/30"
-                disabled={isLoading}
-              />
-              <button
-                type="submit"
-                disabled={!input.trim() || isLoading}
-                className="absolute bottom-2.5 right-2.5 flex h-9 w-9 items-center justify-center rounded-xl bg-cyan-300 text-[#06103d] shadow-lg shadow-cyan-400/35 transition-all hover:bg-cyan-200 disabled:pointer-events-none disabled:opacity-40"
-                aria-label="Send"
-              >
-                <svg
-                  className="h-4 w-4"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"
+                  {isLoading && (
+                    <div className="flex justify-start animate-fade-in">
+                      <div className="flex items-center gap-2 rounded-3xl bg-white/60 px-4 py-3 ring-1 ring-white/40">
+                        <span className="flex h-2 w-2 animate-bounce rounded-full bg-cyan-600 [animation-delay:-0.3s]" />
+                        <span className="flex h-2 w-2 animate-bounce rounded-full bg-cyan-600 [animation-delay:-0.15s]" />
+                        <span className="flex h-2 w-2 animate-bounce rounded-full bg-cyan-600" />
+                      </div>
+                    </div>
+                  )}
+
+                  <div ref={messagesEndRef} />
+                </div>
+              )}
+            </main>
+
+            {/* Input */}
+            <div className="border-t border-white/40 bg-white/55 px-4 py-4 sm:px-8">
+              <form onSubmit={handleSubmit} className="flex items-end gap-3">
+                <div className="relative flex-1">
+                  <textarea
+                    ref={textareaRef}
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        handleSubmit(e);
+                      }
+                    }}
+                    placeholder="Type your message..."
+                    rows={1}
+                    className="w-full resize-none rounded-2xl border border-white/50 bg-white/70 px-4 py-3.5 pr-12 text-[15px] text-[#0b2e3b] placeholder:text-[#0b2e3b]/40 outline-none transition focus:border-cyan-300/60 focus:ring-2 focus:ring-cyan-300/30"
+                    disabled={isLoading}
                   />
-                </svg>
-              </button>
+
+                  <button
+                    type="submit"
+                    disabled={!input.trim() || isLoading}
+                    className="absolute bottom-2.5 right-2.5 flex h-9 w-9 items-center justify-center rounded-xl bg-cyan-600 text-white shadow-lg shadow-cyan-600/20 transition hover:bg-cyan-500 disabled:pointer-events-none disabled:opacity-40"
+                    aria-label="Send"
+                  >
+                    <svg
+                      className="h-4 w-4"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={2}
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"
+                      />
+                    </svg>
+                  </button>
+                </div>
+              </form>
             </div>
-          </form>
+          </div>
         </div>
-      </main>
+      </div>
     </div>
   );
 }
