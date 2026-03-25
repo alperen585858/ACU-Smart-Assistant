@@ -46,13 +46,36 @@ export default function ChatPage() {
     setInput("");
     setIsLoading(true);
 
-    // Simüle yanıt (backend bağlanınca buraya API çağrısı gelecek)
-    await new Promise((r) => setTimeout(r, 800 + Math.random() * 700));
+    // Docker: compose'ta NEXT_PUBLIC_API_URL. Yerel npm run dev: .env.local veya bu varsayılan (Django 8000).
+    const apiBase = (
+      process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000"
+    ).replace(/\/$/, "");
+    let replyText: string;
+    try {
+      const res = await fetch(`${apiBase}/api/chat/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: trimmed }),
+      });
+      const data = (await res.json()) as { reply?: string; error?: string };
+      if (!res.ok) {
+        replyText =
+          data.error ||
+          `Sunucu hatası (${res.status}). Ollama ve backend çalışıyor mu kontrol edin.`;
+      } else if (data.reply) {
+        replyText = data.reply;
+      } else {
+        replyText = "Beklenmeyen yanıt formatı.";
+      }
+    } catch {
+      replyText =
+        "Bağlantı kurulamadı. Backend adresini (NEXT_PUBLIC_API_URL) ve ağ ayarlarını kontrol edin.";
+    }
 
     const assistantMessage: Message = {
       id: crypto.randomUUID(),
       role: "assistant",
-      content: `Preparing a response for your question. Real responses will appear here once the backend is connected.`,
+      content: replyText,
       timestamp: new Date(),
     };
     setMessages((prev) => [...prev, assistantMessage]);
