@@ -3,6 +3,7 @@ import time
 from collections import deque
 from urllib.parse import urldefrag, urljoin, urlparse
 from urllib.robotparser import RobotFileParser
+from typing import Any
 
 import requests
 from bs4 import BeautifulSoup
@@ -129,6 +130,11 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        # Django provides these dynamically at runtime, but type checkers often
+        # don't have enough metadata for `self.style` and `Model.objects`.
+        style: Any = self.style
+        page_objects: Any = getattr(Page, "objects")
+
         delay: float = max(0.0, options["delay"])
         dry_run: bool = options["dry_run"]
         crawl: bool = options["crawl"]
@@ -152,7 +158,7 @@ class Command(BaseCommand):
         )
         if not ignore_robots and rp is None:
             self.stdout.write(
-                self.style.WARNING(
+                style.WARNING(
                     "Could not load robots.txt; continuing without robots checks."
                 )
             )
@@ -160,7 +166,7 @@ class Command(BaseCommand):
         seeds = [normalize_url(u) for u in DEFAULT_SEEDS]
         seeds = [u for u in seeds if u]
         if not seeds:
-            self.stderr.write(self.style.ERROR("No valid seed URLs."))
+            self.stderr.write(style.ERROR("No valid seed URLs."))
             return
 
         if crawl:
@@ -179,7 +185,7 @@ class Command(BaseCommand):
             visited.add(url)
 
             if rp is not None and not rp.can_fetch(USER_AGENT, url):
-                self.stdout.write(self.style.WARNING(f"robots.txt disallows: {url}"))
+                self.stdout.write(style.WARNING(f"robots.txt disallows: {url}"))
                 continue
 
             try:
@@ -187,12 +193,12 @@ class Command(BaseCommand):
                 resp = session.get(url, timeout=REQUEST_TIMEOUT)
                 resp.raise_for_status()
             except requests.RequestException as exc:
-                self.stdout.write(self.style.WARNING(f"GET failed {url}: {exc}"))
+                self.stdout.write(style.WARNING(f"GET failed {url}: {exc}"))
                 continue
 
             ctype = (resp.headers.get("Content-Type") or "").lower()
             if "text/html" not in ctype and "application/xhtml" not in ctype:
-                self.stdout.write(self.style.WARNING(f"Skip non-HTML: {url}"))
+                self.stdout.write(style.WARNING(f"Skip non-HTML: {url}"))
                 continue
 
             fetched += 1
@@ -201,13 +207,13 @@ class Command(BaseCommand):
             if not title:
                 title = url[:500]
             if not text:
-                self.stdout.write(self.style.WARNING(f"Empty body text: {url}"))
+                self.stdout.write(style.WARNING(f"Empty body text: {url}"))
                 text = ""
 
             if dry_run:
                 self.stdout.write(f"[dry-run] {url} | {title[:80]!r} | {len(text)} chars")
             else:
-                Page.objects.update_or_create(
+                page_objects.update_or_create(
                     url=url,
                     defaults={
                         "title": title,
@@ -216,7 +222,7 @@ class Command(BaseCommand):
                     },
                 )
                 saved += 1
-                self.stdout.write(self.style.SUCCESS(f"Saved: {url}"))
+                self.stdout.write(style.SUCCESS(f"Saved: {url}"))
 
             if not crawl or depth >= max_depth:
                 continue
@@ -234,7 +240,7 @@ class Command(BaseCommand):
                 queue.append((next_url, depth + 1))
 
         self.stdout.write(
-            self.style.NOTICE(
+            style.NOTICE(
                 f"Done. Fetched={fetched}, DB rows touched={saved if not dry_run else 0}, "
                 f"crawl={'on' if crawl else 'off'}."
             )
