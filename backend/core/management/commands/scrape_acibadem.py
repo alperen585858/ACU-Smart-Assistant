@@ -17,7 +17,6 @@ DEFAULT_SEEDS = (
 )
 ALLOWED_NETLOCS = frozenset(
     {
-        "www.acibadem.edu.tr",
         "acibadem.edu.tr",
     }
 )
@@ -25,6 +24,7 @@ USER_AGENT = (
     "ACU-Smart-Assistant/0.1 (+university project; respectful crawl; contact: student)"
 )
 REQUEST_TIMEOUT = 25
+MAX_CONTENT_CHARS = 5000
 
 
 def normalize_url(url: str) -> str:
@@ -36,6 +36,9 @@ def normalize_url(url: str) -> str:
     if parsed.scheme not in ("http", "https"):
         return ""
     host = parsed.netloc.lower()
+    # Normalize host so "www." and non-"www" URLs collapse to the same record.
+    if host.startswith("www."):
+        host = host[4:]
     if host not in ALLOWED_NETLOCS:
         return ""
     path = parsed.path or "/"
@@ -46,7 +49,10 @@ def normalize_url(url: str) -> str:
 
 def same_site(url: str) -> bool:
     try:
-        return urlparse(url).netloc.lower() in ALLOWED_NETLOCS
+        host = urlparse(url).netloc.lower()
+        if host.startswith("www."):
+            host = host[4:]
+        return host in ALLOWED_NETLOCS
     except Exception:
         return False
 
@@ -64,6 +70,8 @@ def extract_title_and_text(html: str) -> tuple[str, str]:
     else:
         text = root.get_text(separator="\n", strip=True)
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    # Keep DB rows (and later LLM context) bounded.
+    text = text[:MAX_CONTENT_CHARS]
     title = (raw_title or "")[:500]
     return title, text
 
@@ -137,7 +145,11 @@ class Command(BaseCommand):
             }
         )
 
-        rp = None if ignore_robots else load_robot_parser("https://www.acibadem.edu.tr/")
+        rp = (
+            None
+            if ignore_robots
+            else load_robot_parser("https://acibadem.edu.tr/")
+        )
         if not ignore_robots and rp is None:
             self.stdout.write(
                 self.style.WARNING(
