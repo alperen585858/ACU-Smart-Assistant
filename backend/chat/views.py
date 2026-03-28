@@ -12,12 +12,18 @@ from django.views.decorators.http import require_GET, require_http_methods
 
 from .models import ChatMessage, ChatSession
 
+LLM_BACKEND = os.environ.get("LLM_BACKEND", "ollama")
+
+# Ollama settings
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "phi3:mini")
-# CPU’da hız: düşük değer = daha kısa cevap, daha az bekleme (.env ile yükseltilebilir)
 OLLAMA_NUM_PREDICT = int(os.environ.get("OLLAMA_NUM_PREDICT", "96"))
 OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "1024"))
 OLLAMA_HTTP_TIMEOUT = int(os.environ.get("OLLAMA_HTTP_TIMEOUT", "120"))
+
+# Claude API settings
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 
 SYSTEM_TEXT = (
     "Sadece Türkçe cevap ver. En fazla 2–3 kısa cümle; liste ve uzun açıklama yazma."
@@ -31,6 +37,53 @@ def _parse_client_id(raw: str | None):
         return uuid.UUID(str(raw))
     except (ValueError, TypeError):
         return None
+
+
+def _call_claude(messages: list) -> tuple[str | None, str | None]:
+    system_text = ""
+    api_messages = []
+    for m in messages:
+        if m["role"] == "system":
+            system_text = m["content"]
+        else:
+            api_messages.append({"role": m["role"], "content": m["content"]})
+
+    payload = json.dumps({
+        "model": CLAUDE_MODEL,
+        "max_tokens": 256,
+        "system": system_text,
+        "messages": api_messages,
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "x-api-key": ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode(errors="replace")
+        return None, f"Claude API hatası: {detail}"
+    except urllib.error.URLError as e:
+        return None, f"Claude API bağlantı hatası: {e.reason}"
+
+    content_blocks = data.get("content", [])
+    reply = ""
+    for block in content_blocks:
+        if block.get("type") == "text":
+            reply += block.get("text", "")
+    reply = reply.strip()
+    if not reply:
+        return None, "Claude boş yanıt döndü"
+    return reply, None
 
 
 def _call_ollama(ollama_messages: list) -> tuple[str | None, str | None]:
@@ -74,6 +127,12 @@ def _call_ollama(ollama_messages: list) -> tuple[str | None, str | None]:
     if not reply:
         return None, "Empty model response"
     return reply, None
+
+
+def _call_llm(messages: list) -> tuple[str | None, str | None]:
+    if LLM_BACKEND == "claude" and ANTHROPIC_API_KEY:
+        return _call_claude(messages)
+    return _call_ollama(messages)
 
 
 @csrf_exempt
@@ -162,7 +221,7 @@ def chat_completion(request):
             return JsonResponse({"error": "message or messages is required"}, status=400)
         ollama_messages.append({"role": "user", "content": message})
 
-    reply_text, err = _call_ollama(ollama_messages)
+    reply_text, err = _call_llm(ollama_messages)
     if err:
         status = 504 if "zaman aşımı" in err.lower() or "timeout" in err.lower() else 502
         return JsonResponse({"error": err}, status=status)
@@ -200,7 +259,7 @@ def _chat_with_db(request, body: dict, client_uuid: uuid.UUID) -> JsonResponse:
         session.save(update_fields=["title"])
         title_changed = True
 
-    reply_text, err = _call_ollama(ollama_messages)
+    reply_text, err = _call_llm(ollama_messages)
     if err:
         user_row.delete()
         if title_changed:

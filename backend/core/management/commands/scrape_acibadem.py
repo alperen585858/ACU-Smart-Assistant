@@ -1,9 +1,6 @@
 import re
 import time
-<<<<<<< HEAD
 from typing import Any
-=======
->>>>>>> 8b8976e (Add Acibadem web scraper and Page storage)
 from collections import deque
 from urllib.parse import urldefrag, urljoin, urlparse
 from urllib.robotparser import RobotFileParser
@@ -21,10 +18,7 @@ DEFAULT_SEEDS = (
 )
 ALLOWED_NETLOCS = frozenset(
     {
-<<<<<<< HEAD
-=======
         "www.acibadem.edu.tr",
->>>>>>> 8b8976e (Add Acibadem web scraper and Page storage)
         "acibadem.edu.tr",
     }
 )
@@ -32,10 +26,7 @@ USER_AGENT = (
     "ACU-Smart-Assistant/0.1 (+university project; respectful crawl; contact: student)"
 )
 REQUEST_TIMEOUT = 25
-<<<<<<< HEAD
 MAX_CONTENT_CHARS = 5000
-=======
->>>>>>> 8b8976e (Add Acibadem web scraper and Page storage)
 
 
 def normalize_url(url: str) -> str:
@@ -47,12 +38,8 @@ def normalize_url(url: str) -> str:
     if parsed.scheme not in ("http", "https"):
         return ""
     host = parsed.netloc.lower()
-<<<<<<< HEAD
-    # Normalize host so "www." and non-"www" URLs collapse to the same record.
     if host.startswith("www."):
         host = host[4:]
-=======
->>>>>>> 8b8976e (Add Acibadem web scraper and Page storage)
     if host not in ALLOWED_NETLOCS:
         return ""
     path = parsed.path or "/"
@@ -63,14 +50,10 @@ def normalize_url(url: str) -> str:
 
 def same_site(url: str) -> bool:
     try:
-<<<<<<< HEAD
         host = urlparse(url).netloc.lower()
         if host.startswith("www."):
             host = host[4:]
         return host in ALLOWED_NETLOCS
-=======
-        return urlparse(url).netloc.lower() in ALLOWED_NETLOCS
->>>>>>> 8b8976e (Add Acibadem web scraper and Page storage)
     except Exception:
         return False
 
@@ -88,11 +71,7 @@ def extract_title_and_text(html: str) -> tuple[str, str]:
     else:
         text = root.get_text(separator="\n", strip=True)
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
-<<<<<<< HEAD
-    # Keep DB rows (and later LLM context) bounded.
     text = text[:MAX_CONTENT_CHARS]
-=======
->>>>>>> 8b8976e (Add Acibadem web scraper and Page storage)
     title = (raw_title or "")[:500]
     return title, text
 
@@ -150,12 +129,7 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-<<<<<<< HEAD
-        # `BaseCommand.style` is provided dynamically by Django and basedpyright
-        # sometimes fails to understand its full attribute surface.
         style: Any = self.style
-=======
->>>>>>> 8b8976e (Add Acibadem web scraper and Page storage)
         delay: float = max(0.0, options["delay"])
         dry_run: bool = options["dry_run"]
         crawl: bool = options["crawl"]
@@ -172,21 +146,14 @@ class Command(BaseCommand):
             }
         )
 
-<<<<<<< HEAD
         rp = (
             None
             if ignore_robots
-            else load_robot_parser("https://acibadem.edu.tr/")
+            else load_robot_parser("https://www.acibadem.edu.tr/")
         )
         if not ignore_robots and rp is None:
             self.stdout.write(
                 style.WARNING(
-=======
-        rp = None if ignore_robots else load_robot_parser("https://www.acibadem.edu.tr/")
-        if not ignore_robots and rp is None:
-            self.stdout.write(
-                self.style.WARNING(
->>>>>>> 8b8976e (Add Acibadem web scraper and Page storage)
                     "Could not load robots.txt; continuing without robots checks."
                 )
             )
@@ -194,11 +161,7 @@ class Command(BaseCommand):
         seeds = [normalize_url(u) for u in DEFAULT_SEEDS]
         seeds = [u for u in seeds if u]
         if not seeds:
-<<<<<<< HEAD
             self.stderr.write(style.ERROR("No valid seed URLs."))
-=======
-            self.stderr.write(self.style.ERROR("No valid seed URLs."))
->>>>>>> 8b8976e (Add Acibadem web scraper and Page storage)
             return
 
         if crawl:
@@ -217,11 +180,7 @@ class Command(BaseCommand):
             visited.add(url)
 
             if rp is not None and not rp.can_fetch(USER_AGENT, url):
-<<<<<<< HEAD
                 self.stdout.write(style.WARNING(f"robots.txt disallows: {url}"))
-=======
-                self.stdout.write(self.style.WARNING(f"robots.txt disallows: {url}"))
->>>>>>> 8b8976e (Add Acibadem web scraper and Page storage)
                 continue
 
             try:
@@ -229,20 +188,12 @@ class Command(BaseCommand):
                 resp = session.get(url, timeout=REQUEST_TIMEOUT)
                 resp.raise_for_status()
             except requests.RequestException as exc:
-<<<<<<< HEAD
                 self.stdout.write(style.WARNING(f"GET failed {url}: {exc}"))
-=======
-                self.stdout.write(self.style.WARNING(f"GET failed {url}: {exc}"))
->>>>>>> 8b8976e (Add Acibadem web scraper and Page storage)
                 continue
 
             ctype = (resp.headers.get("Content-Type") or "").lower()
             if "text/html" not in ctype and "application/xhtml" not in ctype:
-<<<<<<< HEAD
                 self.stdout.write(style.WARNING(f"Skip non-HTML: {url}"))
-=======
-                self.stdout.write(self.style.WARNING(f"Skip non-HTML: {url}"))
->>>>>>> 8b8976e (Add Acibadem web scraper and Page storage)
                 continue
 
             fetched += 1
@@ -251,21 +202,13 @@ class Command(BaseCommand):
             if not title:
                 title = url[:500]
             if not text:
-<<<<<<< HEAD
                 self.stdout.write(style.WARNING(f"Empty body text: {url}"))
-=======
-                self.stdout.write(self.style.WARNING(f"Empty body text: {url}"))
->>>>>>> 8b8976e (Add Acibadem web scraper and Page storage)
                 text = ""
 
             if dry_run:
                 self.stdout.write(f"[dry-run] {url} | {title[:80]!r} | {len(text)} chars")
             else:
-<<<<<<< HEAD
-                Page.objects.update_or_create(  # type: ignore[attr-defined]
-=======
                 Page.objects.update_or_create(
->>>>>>> 8b8976e (Add Acibadem web scraper and Page storage)
                     url=url,
                     defaults={
                         "title": title,
@@ -274,11 +217,7 @@ class Command(BaseCommand):
                     },
                 )
                 saved += 1
-<<<<<<< HEAD
                 self.stdout.write(style.SUCCESS(f"Saved: {url}"))
-=======
-                self.stdout.write(self.style.SUCCESS(f"Saved: {url}"))
->>>>>>> 8b8976e (Add Acibadem web scraper and Page storage)
 
             if not crawl or depth >= max_depth:
                 continue
@@ -296,11 +235,7 @@ class Command(BaseCommand):
                 queue.append((next_url, depth + 1))
 
         self.stdout.write(
-<<<<<<< HEAD
             style.NOTICE(
-=======
-            self.style.NOTICE(
->>>>>>> 8b8976e (Add Acibadem web scraper and Page storage)
                 f"Done. Fetched={fetched}, DB rows touched={saved if not dry_run else 0}, "
                 f"crawl={'on' if crawl else 'off'}."
             )
