@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 40" fill="none">
+  <rect width="120" height="40" rx="8" fill="#0b2e3b"/>
+  <text x="10" y="27" font-family="system-ui, sans-serif" font-weight="700" font-size="20" fill="#ffffff">ACU</text>
+  <text x="58" y="27" font-family="system-ui, sans-serif" font-weight="400" font-size="11" fill="#5eead4">Smart</text>
+</svg>

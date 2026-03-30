@@ -339,11 +339,9 @@ export default function ChatPage() {
         className="pointer-events-none fixed inset-0 overflow-hidden"
         aria-hidden
       >
-        <div
-          className="absolute inset-0 bg-cover bg-center bg-no-repeat"
-          style={{ backgroundImage: `url("/kampus.png.webp")` }}
-        />
-        <div className="absolute inset-0 bg-[#04032a]/65" />
+        <div className="absolute inset-0 bg-gradient-to-br from-[#0b2e3b] via-[#0a1628] to-[#162a3e]" />
+        <div className="absolute -top-32 -right-32 h-96 w-96 rounded-full bg-cyan-500/10 blur-3xl animate-float" />
+        <div className="absolute -bottom-32 -left-32 h-96 w-96 rounded-full bg-blue-500/10 blur-3xl animate-float [animation-delay:3s]" />
       </div>
 
       <div className="relative z-10 flex min-h-screen items-center justify-center px-4 py-10 pt-20 sm:pt-10">
@@ -502,8 +500,7 @@ export default function ChatPage() {
                         Merhaba, nasıl yardımcı olabilirim?
                       </p>
                       <p className="mt-2 max-w-sm text-sm text-[#0b2e3b]/65">
-                        Sohbetler PostgreSQL&apos;de saklanır. Bu tarayıcı için
-                        benzersiz bir anahtar kullanılır.
+                        Acıbadem Üniversitesi hakkında sorularınızı yanıtlıyorum.
                       </p>
                     </div>
 

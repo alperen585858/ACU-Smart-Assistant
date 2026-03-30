@@ -10,9 +10,13 @@ from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_http_methods
 
+from django.db.models import Q
+
 from .models import ChatMessage, ChatSession
+from core.models import Page
 
 LLM_BACKEND = os.environ.get("LLM_BACKEND", "ollama")
+RAG_MAX_CHARS = 2000
 
 # Ollama settings
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
@@ -25,9 +29,51 @@ OLLAMA_HTTP_TIMEOUT = int(os.environ.get("OLLAMA_HTTP_TIMEOUT", "120"))
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 
-SYSTEM_TEXT = (
-    "Sadece Türkçe cevap ver. En fazla 2–3 kısa cümle; liste ve uzun açıklama yazma."
+SYSTEM_BASE = (
+    "You are ACU Smart Assistant for Acıbadem University. "
+    "IMPORTANT: Always respond in Turkish only. "
+    "Keep answers short: 2-3 sentences maximum. "
+    "Use only the provided context to answer. "
+    "If you don't know, say 'Bu konuda bilgim yok.'"
 )
+
+
+def _search_pages(query: str) -> str:
+    """DB'deki ACU sayfalarında basit keyword arama yap, en alakalı içerikleri döndür."""
+    words = query.lower().split()
+    if not words:
+        return ""
+    filters = Q()
+    for word in words:
+        if len(word) >= 3:
+            filters |= Q(content__icontains=word) | Q(title__icontains=word)
+    if not filters:
+        return ""
+    pages = Page.objects.filter(filters)[:3]
+    if not pages:
+        return ""
+    context_parts = []
+    total = 0
+    for p in pages:
+        snippet = p.content[:800]
+        if total + len(snippet) > RAG_MAX_CHARS:
+            break
+        context_parts.append(f"[{p.title}]\n{snippet}")
+        total += len(snippet)
+    return "\n\n".join(context_parts)
+
+
+def _build_system_prompt(user_message: str) -> str:
+    """Kullanıcı mesajına göre RAG context eklenmiş system prompt oluştur."""
+    context = _search_pages(user_message)
+    if context:
+        return (
+            f"{SYSTEM_BASE}\n\n"
+            f"Answer the user's question using ONLY the following context. "
+            f"Summarize the relevant parts in Turkish.\n\n"
+            f"Context:\n{context}"
+        )
+    return SYSTEM_BASE
 
 
 def _parse_client_id(raw: str | None):
@@ -198,8 +244,9 @@ def chat_completion(request):
     if client_uuid is not None:
         return _chat_with_db(request, body, client_uuid)
 
-    system_text = SYSTEM_TEXT
     raw_history = body.get("messages")
+    user_msg = (body.get("message") or "").strip()
+    system_text = _build_system_prompt(user_msg)
     ollama_messages = [{"role": "system", "content": system_text}]
 
     if isinstance(raw_history, list) and len(raw_history) > 0:
@@ -244,7 +291,8 @@ def _chat_with_db(request, body: dict, client_uuid: uuid.UUID) -> JsonResponse:
         session = ChatSession.objects.create(client_id=client_uuid, title="Yeni sohbet")
 
     prior = list(session.messages.all())
-    ollama_messages: list = [{"role": "system", "content": SYSTEM_TEXT}]
+    system_text = _build_system_prompt(message)
+    ollama_messages: list = [{"role": "system", "content": system_text}]
     for m in prior[-39:]:
         if m.role in ("user", "assistant") and m.content.strip():
             ollama_messages.append({"role": m.role, "content": m.content})
