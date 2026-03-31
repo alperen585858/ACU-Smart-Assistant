@@ -24,9 +24,10 @@ RAG_MAX_DISTANCE = float(os.environ.get("RAG_MAX_DISTANCE", "0.55"))
 # Ollama settings
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "phi3:mini")
-OLLAMA_NUM_PREDICT = int(os.environ.get("OLLAMA_NUM_PREDICT", "96"))
-OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "1024"))
-OLLAMA_HTTP_TIMEOUT = int(os.environ.get("OLLAMA_HTTP_TIMEOUT", "120"))
+OLLAMA_NUM_PREDICT = int(os.environ.get("OLLAMA_NUM_PREDICT", "32"))
+OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "512"))
+OLLAMA_HTTP_TIMEOUT = int(os.environ.get("OLLAMA_HTTP_TIMEOUT", "240"))
+OLLAMA_KEEP_ALIVE = os.environ.get("OLLAMA_KEEP_ALIVE", "30m")
 
 # Claude API settings
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -157,6 +158,7 @@ def _call_ollama(ollama_messages: list) -> tuple[str | None, str | None]:
             "model": OLLAMA_MODEL,
             "messages": ollama_messages,
             "stream": False,
+            "keep_alive": OLLAMA_KEEP_ALIVE,
             "options": {
                 "num_predict": OLLAMA_NUM_PREDICT,
                 "num_ctx": OLLAMA_NUM_CTX,

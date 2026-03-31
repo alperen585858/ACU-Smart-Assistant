@@ -1,5 +1,5 @@
 #!/bin/sh
-# Ollama sunucusunu başlat, model yoksa otomatik indir.
+# Ollama sunucusunu baslat, model yoksa otomatik indir.
 
 ollama serve &
 SERVER_PID=$!

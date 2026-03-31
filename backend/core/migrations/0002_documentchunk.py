@@ -3,16 +3,23 @@ import pgvector.django
 from django.db import migrations, models
 
 
+def create_vector_extension(apps, schema_editor):
+    if schema_editor.connection.vendor == "postgresql":
+        schema_editor.execute("CREATE EXTENSION IF NOT EXISTS vector")
+
+
+def drop_vector_extension(apps, schema_editor):
+    if schema_editor.connection.vendor == "postgresql":
+        schema_editor.execute("DROP EXTENSION IF EXISTS vector")
+
+
 class Migration(migrations.Migration):
     dependencies = [
         ("core", "0001_initial"),
     ]
 
     operations = [
-        migrations.RunSQL(
-            sql="CREATE EXTENSION IF NOT EXISTS vector",
-            reverse_sql="DROP EXTENSION IF EXISTS vector",
-        ),
+        migrations.RunPython(create_vector_extension, drop_vector_extension),
         migrations.CreateModel(
             name="DocumentChunk",
             fields=[
