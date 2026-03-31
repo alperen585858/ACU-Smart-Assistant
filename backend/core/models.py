@@ -1,4 +1,5 @@
 from django.db import models
+from pgvector.django import VectorField
 
 
 class Page(models.Model):
@@ -11,3 +12,21 @@ class Page(models.Model):
 
     def __str__(self):
         return self.title or self.url
+
+
+class DocumentChunk(models.Model):
+    page = models.ForeignKey(Page, on_delete=models.CASCADE, related_name="chunks")
+    chunk_index = models.PositiveIntegerField()
+    content = models.TextField()
+    embedding = VectorField(dimensions=384)
+    source_url = models.URLField(max_length=2000)
+    page_title = models.CharField(max_length=500, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ("page", "chunk_index")
+        indexes = [models.Index(fields=["page", "chunk_index"])]
+
+    def __str__(self):
+        return f"{self.page_id}:{self.chunk_index}"

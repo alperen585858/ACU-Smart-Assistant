@@ -10,13 +10,16 @@ from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_http_methods
 
-from django.db.models import Q
+from pgvector.django import CosineDistance
 
 from .models import ChatMessage, ChatSession
-from core.models import Page
+from core.embeddings import embed_query
+from core.models import DocumentChunk
 
 LLM_BACKEND = os.environ.get("LLM_BACKEND", "ollama")
 RAG_MAX_CHARS = 2000
+RAG_TOP_K = int(os.environ.get("RAG_TOP_K", "8"))
+RAG_MAX_DISTANCE = float(os.environ.get("RAG_MAX_DISTANCE", "0.55"))
 
 # Ollama settings
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
@@ -30,50 +33,66 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 
 SYSTEM_BASE = (
-    "You are ACU Smart Assistant for Acıbadem University. "
-    "IMPORTANT: Always respond in Turkish only. "
-    "Keep answers short: 2-3 sentences maximum. "
-    "Use only the provided context to answer. "
-    "If you don't know, say 'Bu konuda bilgim yok.'"
+    "You are the official website assistant for Acıbadem Mehmet Ali Aydınlar University (ACU). "
+    "LANGUAGE: English only. Never use Turkish unless the user pasted Turkish inside their message. "
+    "STYLE: 2–4 short sentences. Be direct and factual. "
+    "GROUNDING: Use ONLY the Context block below when it is present. Quote or paraphrase it; "
+    "do not invent addresses, policies, disclaimers, or refusals. "
+    "Do not mention OpenAI, Anthropic, Microsoft, training data, or content policies. "
+    "If Context is missing or does not contain the answer, reply exactly: "
+    "\"I don't have that information in the crawled pages. Try running a data refresh or rephrase your question.\" "
+    "If the question is out of scope for the website content, say so in one sentence."
 )
 
 
 def _search_pages(query: str) -> str:
-    """DB'deki ACU sayfalarında basit keyword arama yap, en alakalı içerikleri döndür."""
-    words = query.lower().split()
-    if not words:
+    """Semantic retrieval over DocumentChunk embeddings."""
+    query = (query or "").strip()
+    if not query:
         return ""
-    filters = Q()
-    for word in words:
-        if len(word) >= 3:
-            filters |= Q(content__icontains=word) | Q(title__icontains=word)
-    if not filters:
+
+    query_vector = embed_query(query)
+    if not query_vector:
         return ""
-    pages = Page.objects.filter(filters)[:3]
-    if not pages:
-        return ""
+
+    chunks = (
+        DocumentChunk.objects.annotate(distance=CosineDistance("embedding", query_vector))
+        .filter(distance__lte=RAG_MAX_DISTANCE)
+        .order_by("distance")[:RAG_TOP_K]
+    )
+
     context_parts = []
     total = 0
-    for p in pages:
-        snippet = p.content[:800]
+    seen_urls: set[str] = set()
+    for chunk in chunks:
+        if chunk.source_url in seen_urls and total > int(RAG_MAX_CHARS * 0.7):
+            continue
+        seen_urls.add(chunk.source_url)
+
+        snippet = chunk.content[:700]
         if total + len(snippet) > RAG_MAX_CHARS:
             break
-        context_parts.append(f"[{p.title}]\n{snippet}")
+        title = chunk.page_title or chunk.source_url
+        context_parts.append(f"[{title}]\n{snippet}")
         total += len(snippet)
     return "\n\n".join(context_parts)
 
 
 def _build_system_prompt(user_message: str) -> str:
-    """Kullanıcı mesajına göre RAG context eklenmiş system prompt oluştur."""
+    """Build system prompt with optional RAG context for the user's message."""
     context = _search_pages(user_message)
     if context:
         return (
             f"{SYSTEM_BASE}\n\n"
-            f"Answer the user's question using ONLY the following context. "
-            f"Summarize the relevant parts in Turkish.\n\n"
-            f"Context:\n{context}"
+            f"Context (from crawled ACU site pages):\n{context}\n\n"
+            f"Answer the user in English using ONLY the Context above. "
+            f"If Context does not mention the answer, use the exact fallback sentence from the rules."
         )
-    return SYSTEM_BASE
+    return (
+        f"{SYSTEM_BASE}\n\n"
+        f"No Context was retrieved for this question. Follow the fallback rule; "
+        f"do not guess from general knowledge."
+    )
 
 
 def _parse_client_id(raw: str | None):
