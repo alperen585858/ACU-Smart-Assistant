@@ -1,9 +1,9 @@
 import re
 import time
-from typing import Any
 from collections import deque
 from urllib.parse import urldefrag, urljoin, urlparse
 from urllib.robotparser import RobotFileParser
+from typing import Any
 
 import requests
 from bs4 import BeautifulSoup
@@ -18,7 +18,6 @@ DEFAULT_SEEDS = (
 )
 ALLOWED_NETLOCS = frozenset(
     {
-        "www.acibadem.edu.tr",
         "acibadem.edu.tr",
     }
 )
@@ -38,6 +37,7 @@ def normalize_url(url: str) -> str:
     if parsed.scheme not in ("http", "https"):
         return ""
     host = parsed.netloc.lower()
+    # Normalize host so "www." and non-"www" URLs collapse to the same record.
     if host.startswith("www."):
         host = host[4:]
     if host not in ALLOWED_NETLOCS:
@@ -71,6 +71,7 @@ def extract_title_and_text(html: str) -> tuple[str, str]:
     else:
         text = root.get_text(separator="\n", strip=True)
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    # Keep DB rows (and later LLM context) bounded.
     text = text[:MAX_CONTENT_CHARS]
     title = (raw_title or "")[:500]
     return title, text
@@ -129,7 +130,11 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        # Django provides these dynamically at runtime, but type checkers often
+        # don't have enough metadata for `self.style` and `Model.objects`.
         style: Any = self.style
+        page_objects: Any = getattr(Page, "objects")
+
         delay: float = max(0.0, options["delay"])
         dry_run: bool = options["dry_run"]
         crawl: bool = options["crawl"]
@@ -149,7 +154,7 @@ class Command(BaseCommand):
         rp = (
             None
             if ignore_robots
-            else load_robot_parser("https://www.acibadem.edu.tr/")
+            else load_robot_parser("https://acibadem.edu.tr/")
         )
         if not ignore_robots and rp is None:
             self.stdout.write(
@@ -208,7 +213,7 @@ class Command(BaseCommand):
             if dry_run:
                 self.stdout.write(f"[dry-run] {url} | {title[:80]!r} | {len(text)} chars")
             else:
-                Page.objects.update_or_create(
+                page_objects.update_or_create(
                     url=url,
                     defaults={
                         "title": title,

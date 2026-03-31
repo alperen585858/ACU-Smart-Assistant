@@ -1,0 +1,18 @@
+{
+  "include": ["backend"],
+  "exclude": [
+    "node_modules",
+    "frontend",
+    "**/.venv",
+    ".venv",
+    "**/migrations",
+    "**/management"
+  ],
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "basic",
+  "reportMissingImports": false,
+  "reportMissingTypeStubs": false
+}
+
