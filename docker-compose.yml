@@ -1,12 +1,32 @@
-# Üç ayrı container (tek compose dosyası sadece hepsini birlikte ayağa kaldırır):
-#   1) acu-chatbot-db       → PostgreSQL (postgres:15-alpine)
-#   2) acu-chatbot-backend → Django (./backend/Dockerfile)
-#   3) acu-chatbot-frontend→ Next.js (./frontend/Dockerfile)
-# Proje kökünden: docker compose up --build
+# Tek komut: docker compose up -d [--build]
+# Mac’te ayrıca npm run dev / manage.py runserver çalıştırmanız gerekmez; Next.js bu dosyadaki
+# frontend servisinin içinde otomatik başlar (Dockerfile: npm run dev).
+#
+# Servisler:
+#   1) acu-chatbot-db       → PostgreSQL
+#   2) acu-chatbot-ollama  → Ollama (phi3:mini; Docker Memory artırın)
+#   3) acu-chatbot-backend → Django
+#   4) acu-chatbot-frontend→ Next.js (tarayıcı: FRONTEND_HOST_PORT, varsayılan 3000; meşgulse .env’de 3001)
 
 services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: acu-chatbot-ollama
+    entrypoint: ["/bin/sh", "/ollama-entrypoint.sh"]
+    command: []
+    environment:
+      OLLAMA_PULL_MODEL: ${OLLAMA_MODEL:-phi3:mini}
+    volumes:
+      - ollama_data:/root/.ollama
+      - ./scripts/ollama-entrypoint.sh:/ollama-entrypoint.sh:ro
+    ports:
+      - "11434:11434"
+    networks:
+      - acu_net
+    restart: unless-stopped
+
   db:
-    image: postgres:15-alpine
+    image: pgvector/pgvector:pg15
     container_name: acu-chatbot-db
     networks:
       - acu_net
@@ -14,8 +34,9 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-acu}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-acu_secret}
       POSTGRES_DB: ${POSTGRES_DB:-acu_chatbot}
+    # Host’ta 5432 genelde meşgul (yerel PostgreSQL); makineden bağlanmak için 5433 kullanın.
     ports:
-      - "5432:5432"
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -23,6 +44,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
   backend:
     build:
@@ -39,15 +61,23 @@ services:
       POSTGRES_HOST: db
       POSTGRES_PORT: "5432"
       ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1,backend}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-phi3:mini}
+      OLLAMA_NUM_PREDICT: ${OLLAMA_NUM_PREDICT:-96}
+      OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-1024}
+      OLLAMA_HTTP_TIMEOUT: ${OLLAMA_HTTP_TIMEOUT:-120}
     ports:
-      - "8000:8000"
+      - "${BACKEND_HOST_PORT:-8000}:8000"
     volumes:
       - ./backend:/app
     depends_on:
       db:
         condition: service_healthy
+      ollama:
+        condition: service_started
     networks:
       - acu_net
+    restart: unless-stopped
 
   frontend:
     build:
@@ -55,10 +85,12 @@ services:
       dockerfile: Dockerfile
     container_name: acu-chatbot-frontend
     environment:
-      # Tarayıcıdan erişim: makinenizde http://localhost:8000
+      # Tarayıcı → Django: BACKEND_HOST_PORT ile uyumlu olmalı (varsayılan 8000)
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      WATCHPACK_POLLING: "true"
     ports:
-      - "3000:3000"
+      # 3000 bind hatası alırsanız Project/.env → FRONTEND_HOST_PORT=3001
+      - "${FRONTEND_HOST_PORT:-3000}:3000"
     volumes:
       - ./frontend:/app
       - frontend_node_modules:/app/node_modules
@@ -66,6 +98,7 @@ services:
       - backend
     networks:
       - acu_net
+    restart: unless-stopped
 
 networks:
   acu_net:
@@ -73,4 +106,5 @@ networks:
 
 volumes:
   pgdata:
+  ollama_data:
   frontend_node_modules:
