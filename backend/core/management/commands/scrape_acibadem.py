@@ -13,7 +13,6 @@ from core.models import Page
 
 SOURCE_LABEL = "acibadem.edu.tr"
 DEFAULT_SEEDS = (
-    "https://www.acibadem.edu.tr/",
     "https://www.acibadem.edu.tr/en",
 )
 ALLOWED_NETLOCS = frozenset(
@@ -28,7 +27,12 @@ REQUEST_TIMEOUT = 25
 MAX_CONTENT_CHARS = 5000
 
 
-def normalize_url(url: str) -> str:
+def is_english_path(path: str) -> bool:
+    normalized_path = (path or "/").rstrip("/").lower()
+    return normalized_path == "/en" or normalized_path.startswith("/en/")
+
+
+def normalize_url(url: str, english_only: bool = True) -> str:
     url, _frag = urldefrag(url.strip())
     parsed = urlparse(url)
     if not parsed.scheme:
@@ -43,6 +47,8 @@ def normalize_url(url: str) -> str:
     if host not in ALLOWED_NETLOCS:
         return ""
     path = parsed.path or "/"
+    if english_only and not is_english_path(path):
+        return ""
     return f"{parsed.scheme}://{host}{path}" + (
         f"?{parsed.query}" if parsed.query else ""
     )
@@ -128,6 +134,11 @@ class Command(BaseCommand):
             action="store_true",
             help="Fetch and parse but do not write to the database.",
         )
+        parser.add_argument(
+            "--allow-non-english",
+            action="store_true",
+            help="Allow crawling non-English paths (disabled by default).",
+        )
 
     def handle(self, *args, **options):
         # Django provides these dynamically at runtime, but type checkers often
@@ -141,13 +152,14 @@ class Command(BaseCommand):
         max_pages: int = max(1, options["max_pages"])
         max_depth: int = max(0, options["depth"])
         ignore_robots: bool = options["ignore_robots"]
+        english_only: bool = not options["allow_non_english"]
 
         session = requests.Session()
         session.headers.update(
             {
                 "User-Agent": USER_AGENT,
                 "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "tr-TR,tr;q=0.9,en;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9,tr;q=0.5",
             }
         )
 
@@ -163,7 +175,7 @@ class Command(BaseCommand):
                 )
             )
 
-        seeds = [normalize_url(u) for u in DEFAULT_SEEDS]
+        seeds = [normalize_url(u, english_only=english_only) for u in DEFAULT_SEEDS]
         seeds = [u for u in seeds if u]
         if not seeds:
             self.stderr.write(style.ERROR("No valid seed URLs."))
@@ -232,7 +244,7 @@ class Command(BaseCommand):
                 href = a["href"].strip()
                 if href.startswith(("mailto:", "tel:", "javascript:")):
                     continue
-                next_url = normalize_url(urljoin(url, href))
+                next_url = normalize_url(urljoin(url, href), english_only=english_only)
                 if not next_url or next_url in visited:
                     continue
                 if not same_site(next_url):

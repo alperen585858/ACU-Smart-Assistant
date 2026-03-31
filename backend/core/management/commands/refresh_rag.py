@@ -1,5 +1,8 @@
 from django.core.management import call_command
 from django.core.management.base import BaseCommand
+from django.db import transaction
+
+from core.models import DocumentChunk, Page
 
 
 class Command(BaseCommand):
@@ -13,8 +16,26 @@ class Command(BaseCommand):
         parser.add_argument("--batch-size", type=int, default=16)
         parser.add_argument("--chunk-size", type=int, default=700)
         parser.add_argument("--chunk-overlap", type=int, default=120)
+        parser.add_argument(
+            "--keep-existing",
+            action="store_true",
+            help="Do not clear existing Page/DocumentChunk rows before refresh.",
+        )
 
     def handle(self, *args, **options):
+        if not options["keep_existing"]:
+            self.stdout.write(
+                self.style.NOTICE("Step 0/2: Clearing existing RAG rows...")
+            )
+            with transaction.atomic():
+                deleted_chunks, _ = DocumentChunk.objects.all().delete()
+                deleted_pages, _ = Page.objects.all().delete()
+            self.stdout.write(
+                self.style.WARNING(
+                    f"Cleared rows: DocumentChunk={deleted_chunks}, Page={deleted_pages}"
+                )
+            )
+
         self.stdout.write(self.style.NOTICE("Step 1/2: Scraping ACU pages..."))
         call_command(
             "scrape_acibadem",
