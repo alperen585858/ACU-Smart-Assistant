@@ -1,5 +1,5 @@
 from django.db import models
-from pgvector.django import VectorField
+from pgvector.django import HnswIndex, VectorField
 
 
 class Page(models.Model):
@@ -26,7 +26,16 @@ class DocumentChunk(models.Model):
 
     class Meta:
         unique_together = ("page", "chunk_index")
-        indexes = [models.Index(fields=["page", "chunk_index"])]
+        indexes = [
+            models.Index(fields=["page", "chunk_index"]),
+            HnswIndex(
+                name="chunk_embedding_hnsw_idx",
+                fields=["embedding"],
+                m=16,
+                ef_construction=64,
+                opclasses=["vector_cosine_ops"],
+            ),
+        ]
 
     def __str__(self):
         return f"{self.page_id}:{self.chunk_index}"
