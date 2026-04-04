@@ -2,11 +2,35 @@
 
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 
+type RagSource = {
+  url: string;
+  title: string;
+  cosine_distance: number;
+};
+
+type RagMeta = {
+  embedding_ok: boolean;
+  chunks_used: number;
+  relaxed_retrieval: boolean;
+  sources: RagSource[];
+  rag_query_preview: string;
+  reason?: string;
+  /** Backend: DocumentChunk rows in DB */
+  indexed_chunks_in_db?: number;
+  /** Characters of crawled excerpts injected into the last user turn */
+  context_chars_sent?: number;
+  /** Full last user message length sent to the LLM (includes ===CONTEXT=== wrapper) */
+  llm_user_turn_chars?: number;
+  /** True if crawled text was embedded in the prompt */
+  context_block_in_llm?: boolean;
+};
+
 type Message = {
   id: string;
   role: "user" | "assistant";
   content: string;
   timestamp: Date;
+  rag?: RagMeta;
 };
 
 type SessionMeta = {
@@ -249,6 +273,12 @@ export default function ChatPage() {
     let ok = false;
     let replyText = "";
     let sidOut: string | null = null;
+    let data: {
+      reply?: string;
+      error?: string;
+      session_id?: string;
+      rag?: RagMeta;
+    } = {};
     try {
       const res = await fetch(`${apiBase}/api/chat/`, {
         method: "POST",
@@ -256,11 +286,6 @@ export default function ChatPage() {
         body: JSON.stringify(body),
         signal: controller.signal,
       });
-      let data: {
-        reply?: string;
-        error?: string;
-        session_id?: string;
-      };
       try {
         data = (await res.json()) as typeof data;
       } catch {
@@ -300,8 +325,16 @@ export default function ChatPage() {
             role: "assistant",
             content: replyText,
             timestamp: new Date(),
+            rag: data.rag,
           },
         ]);
+      } else if (data.rag) {
+        setMessages((prev) => {
+          if (prev.length === 0) return prev;
+          const last = prev[prev.length - 1];
+          if (last.role !== "assistant") return prev;
+          return [...prev.slice(0, -1), { ...last, rag: data.rag }];
+        });
       }
     } else {
       const assistantMessage: Message = {
@@ -309,6 +342,7 @@ export default function ChatPage() {
         role: "assistant",
         content: replyText,
         timestamp: new Date(),
+        rag: data.rag,
       };
       setMessages((prev) => [...prev, userMessage, assistantMessage]);
     }
@@ -540,6 +574,74 @@ export default function ChatPage() {
                           <p className="whitespace-pre-wrap text-[15px] leading-relaxed">
                             {msg.content}
                           </p>
+                          {msg.role === "assistant" && msg.rag && (
+                            <div className="mt-2 border-t border-[#0b2e3b]/12 pt-2 text-left text-[11px] leading-snug text-[#0b2e3b]/60">
+                              {typeof msg.rag.indexed_chunks_in_db === "number" ? (
+                                <p className="mb-2 rounded-md bg-[#0b2e3b]/5 px-2 py-1.5 font-mono text-[10px] text-[#0b2e3b]/75">
+                                  <span className="font-semibold text-[#0b2e3b]/55">
+                                    Veri / model görünürlüğü:{" "}
+                                  </span>
+                                  DB&apos;de{" "}
+                                  <strong>{msg.rag.indexed_chunks_in_db}</strong> chunk · Bu
+                                  istekte LLM&apos;e giden bağlam{" "}
+                                  <strong>{msg.rag.context_chars_sent ?? 0}</strong> karakter ·
+                                  Son kullanıcı mesajı (LLM) toplam{" "}
+                                  <strong>{msg.rag.llm_user_turn_chars ?? 0}</strong> karakter ·
+                                  Bağlam bloklu mu:{" "}
+                                  <strong>
+                                    {msg.rag.context_block_in_llm ? "evet" : "hayır"}
+                                  </strong>
+                                </p>
+                              ) : null}
+                              {msg.rag.chunks_used === 0 ? (
+                                <p className="text-amber-800/90">
+                                  Taranan siteden bu soruya yakın metin gelmedi (
+                                  <code className="rounded bg-[#0b2e3b]/5 px-1">
+                                    chunks_used=0
+                                  </code>
+                                  ). Yanıt genel bilgiye dayanıyor olabilir;{" "}
+                                  <code className="rounded bg-[#0b2e3b]/5 px-1">
+                                    refresh_rag
+                                  </code>{" "}
+                                  çalıştırın veya soruyu İngilizce/üniversite adıyla tekrar deneyin.
+                                </p>
+                              ) : (
+                                <>
+                                  <p className="mb-1 font-semibold uppercase tracking-wide text-[#0b2e3b]/50">
+                                    Modele gönderilen kaynaklar
+                                  </p>
+                                  <ul className="space-y-1">
+                                    {msg.rag.sources.map((s, i) => (
+                                      <li key={`${s.url}-${i}`}>
+                                        <a
+                                          href={s.url}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="font-medium text-cyan-700 underline decoration-cyan-700/30 underline-offset-2 hover:text-cyan-600"
+                                        >
+                                          {s.title?.trim() || s.url}
+                                        </a>
+                                        <span className="ml-1 opacity-75">
+                                          (kosinüs mesafesi {s.cosine_distance})
+                                        </span>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                  {msg.rag.relaxed_retrieval ? (
+                                    <p className="mt-1.5 italic text-[#0b2e3b]/55">
+                                      Sıkı eşik altında eşleşme yoktu; en yakın parçalar
+                                      kullanıldı.
+                                    </p>
+                                  ) : null}
+                                  {!msg.rag.embedding_ok ? (
+                                    <p className="mt-1 text-amber-800/90">
+                                      Embedding üretilemedi; RAG devre dışı kaldı.
+                                    </p>
+                                  ) : null}
+                                </>
+                              )}
+                            </div>
+                          )}
                         </div>
                       </div>
                     ))}
