@@ -38,10 +38,10 @@ RAG_SNIPPET_CHARS = max(400, int(os.environ.get("RAG_SNIPPET_CHARS", "900")))
 
 # Ollama settings
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "phi3:mini")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2:3b")
 # Defaults must fit RAG system prompt + Context (~2k chars) + history; tiny ctx/predict
 # causes truncation so the model never sees the full address and may refuse or hallucinate.
-OLLAMA_NUM_PREDICT = int(os.environ.get("OLLAMA_NUM_PREDICT", "256"))
+OLLAMA_NUM_PREDICT = int(os.environ.get("OLLAMA_NUM_PREDICT", "384"))
 OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "4096"))
 OLLAMA_HTTP_TIMEOUT = int(os.environ.get("OLLAMA_HTTP_TIMEOUT", "240"))
 OLLAMA_KEEP_ALIVE = os.environ.get("OLLAMA_KEEP_ALIVE", "30m")
@@ -77,16 +77,79 @@ SYSTEM_RAG_USER_WRAPPER = (
     "You are the official Acıbadem Mehmet Ali Aydınlar University (ACU) website assistant. "
     "LANGUAGE: English only unless the user pasted Turkish inside ===QUESTION=== below. "
     "The user message has ===CONTEXT=== (excerpts from crawled acibadem.edu.tr) and ===QUESTION===. "
-    "Rules: (1) Every sentence must be directly supported by ===CONTEXT===; if you cannot, stop. "
+    "Rules: (1) Every factual claim must be supported by ===CONTEXT===; do not invent or guess. "
     "(2) Do not add rankings, statistics, dates, program names, fees, or partner universities unless "
-    "those exact facts appear in ===CONTEXT===. Do not generalize or fill gaps from memory. "
-    "(3) 2–4 short sentences maximum. "
+    "those exact facts appear in ===CONTEXT===. Do not fill gaps from memory. "
+    "(3) Default: 2–4 short sentences. If ===QUESTION=== asks for a broad overview, 'everything', "
+    "'all you know', or similar, and ===CONTEXT=== is non-empty, summarize supported facts from "
+    "===CONTEXT=== in up to 8 short sentences—still only facts present in those excerpts. "
     "(4) Never say you are from Microsoft/OpenAI/Anthropic; never mention training data, browsing "
     "the live web, or a knowledge cutoff year. "
-    "(5) If ===QUESTION=== asks for anything not clearly answered in ===CONTEXT===, reply exactly: "
-    "\"I don't have that information in the crawled pages. Try running a data refresh or rephrase your question.\""
+    "(5) If ===CONTEXT=== is non-empty and the user asks generally what the university is or wants "
+    "a wide summary, you MUST answer from ===CONTEXT=== (do not refuse). "
+    "(6) Use the refusal ONLY when ===CONTEXT=== is empty OR the user asks for one specific fact "
+    "that does not appear anywhere in ===CONTEXT===. Refusal text (exact, nothing before or after): "
+    "\"I don't have that information in the crawled pages. Try running a data refresh or rephrase your question.\" "
+    "(7) Never append topics (e.g. scholarships) to the refusal unless that topic is in ===QUESTION===."
 )
 RAG_USER_BUBBLE_MAX_CHARS = max(2000, int(os.environ.get("RAG_USER_BUBBLE_MAX_CHARS", "4500")))
+
+RAG_META_REASON_SKIPPED_SMALLTALK = "skipped_smalltalk_no_rag"
+
+_BROAD_OVERVIEW_QUESTION_RE = re.compile(
+    r"\b(everything|all\s+(you\s+)?know|write\s+all|tell\s+me\s+(everything|all)|overview|"
+    r"summarize|summary|what\s+do\s+you\s+know|genel\s+bilgi|hepsini)\b",
+    re.IGNORECASE,
+)
+
+# Greetings / thanks — do not run RAG (irrelevant chunks force bogus "data refresh" answers).
+SYSTEM_SMALLTALK = (
+    "You are the official website assistant for Acıbadem Mehmet Ali Aydınlar University (ACU). "
+    "LANGUAGE: English only unless the user wrote in Turkish. "
+    "The user sent a short greeting or courtesy, not a factual question about the university. "
+    "Reply with 1–2 brief, friendly sentences: greet back and offer help with ACU topics "
+    "(programs, admissions, campus, contact). "
+    "Do not mention crawled pages, data refresh, scholarships, or training data unless they asked. "
+    "Do not mention OpenAI, Anthropic, or Microsoft. "
+    "Do not repeat or mimic wording from earlier assistant messages in this chat."
+)
+
+_SMALLTALK_RE = re.compile(
+    r"^[\s!?.`,]*("
+    r"(hi|hello|hey|yo|hiya)(\s+(there|everyone|all|guys|team))?"
+    r"|merhaba(\s+nasilsin|\s+nasılsın)?|selam(\s+aleykum)?|\bsa\b|\bslm\b"
+    r"|good\s+(morning|afternoon|evening|night)(\s+there)?"
+    r"|how\s+are\s+you(\s+doing)?|what'?s\s+up|\bwassup\b|you\s+ok\?"
+    r"|thanks?(\s+a\s+lot)?|thank\s+you(\s+so\s+much)?|\bthx\b|\bty\b"
+    r"|teşekkürler?|tesekkurler?"
+    r"|\bok\b|okay|tamam|\bbye\b|goodbye|see\s+you|güle\s+güle"
+    r")[\s!?.`,]*$",
+    re.IGNORECASE,
+)
+
+# If these appear, user likely wants facts — keep RAG on (do not use smalltalk path).
+# Note: do not use bare "what"/"how" here — they appear in "what's up" / "how are you".
+_SMALLTALK_EXCLUDE_RE = re.compile(
+    r"\b(when|where|which|who|why|burs|scholar|tuition|fee|program|programs?|adres|address|"
+    r"başvuru|basvuru|kampüs|kampus|contact|iletişim|ücret|cret|apply|application|"
+    r"deadline|calendar|course|exam|graduate|undergraduate)\b|"
+    r"\bwhat\s+(is|are|was|were|does|did|do|can|should|about|if)\b|"
+    r"\bhow\s+(do|can|i|to|much|many|long|about|apply|register)\b",
+    re.IGNORECASE,
+)
+
+
+def _should_skip_rag_for_smalltalk(user_plain: str) -> bool:
+    t = (user_plain or "").strip()
+    if not t or len(t) > 160:
+        return False
+    compact = " ".join(t.split())
+    if not _SMALLTALK_RE.match(compact):
+        return False
+    if _SMALLTALK_EXCLUDE_RE.search(compact):
+        return False
+    return True
+
 
 _RAG_KEYWORD_STOP = frozenset(
     """
@@ -220,8 +283,10 @@ def _search_pages_with_meta(query: str) -> tuple[str, list[dict], bool, bool]:
 def _wrap_user_with_rag_context(context: str, user_plain: str) -> str:
     footer = (
         "\n===END_QUESTION===\n"
-        "Answer in English using ONLY text from ===CONTEXT===. "
-        "If the answer is not there, output only the exact fallback sentence from the system message."
+        "Answer in English using only facts from ===CONTEXT===. "
+        "If the question is broad or asks for 'everything', summarize what ===CONTEXT=== actually says. "
+        "Use the system-message refusal only when ===CONTEXT=== is empty or the specific fact is missing. "
+        "If you refuse, output the refusal sentence alone with no added clauses."
     )
     body = (
         f"===CONTEXT===\n{context.strip()}\n===QUESTION===\n{user_plain.strip()}{footer}"
@@ -253,6 +318,21 @@ def _prepare_chat_prompts(rag_query: str, user_plain: str) -> tuple[str, str, di
     When retrieval succeeds, crawled excerpts live in the user turn so they stay near the end
     of the prompt and survive context-window truncation better than system-only RAG.
     """
+    user_plain = (user_plain or "").strip()
+
+    if _should_skip_rag_for_smalltalk(user_plain):
+        meta = {
+            "embedding_ok": True,
+            "chunks_used": 0,
+            "relaxed_retrieval": False,
+            "sources": [],
+            "rag_query_preview": "",
+            "reason": RAG_META_REASON_SKIPPED_SMALLTALK,
+        }
+        user_llm = _trim_message_for_llm(user_plain)
+        _attach_llm_visibility_meta(meta, user_llm, 0)
+        return SYSTEM_SMALLTALK, user_llm, meta
+
     context, sources, relaxed, emb_ok = _search_pages_with_meta(rag_query)
     meta: dict = {
         "embedding_ok": emb_ok,
@@ -261,7 +341,6 @@ def _prepare_chat_prompts(rag_query: str, user_plain: str) -> tuple[str, str, di
         "sources": sources,
         "rag_query_preview": rag_query[:400],
     }
-    user_plain = (user_plain or "").strip()
 
     if not emb_ok:
         system = (
@@ -276,8 +355,15 @@ def _prepare_chat_prompts(rag_query: str, user_plain: str) -> tuple[str, str, di
         system = SYSTEM_RAG_USER_WRAPPER
         if relaxed:
             system += (
-                "\n\nNote: Strict match failed; ===CONTEXT=== is the closest crawl text—"
-                "use it only if it clearly answers ===QUESTION===."
+                "\n\nNote: Strict vector match was weak; ===CONTEXT=== is still the closest crawl text. "
+                "For broad or overview questions, summarize facts it contains. "
+                "For one narrow fact, cite it only if that fact clearly appears in ===CONTEXT===."
+            )
+        if _BROAD_OVERVIEW_QUESTION_RE.search(user_plain):
+            system += (
+                "\n\nHIGH PRIORITY: The user asked for a broad summary. ===CONTEXT=== is non-empty — "
+                "answer by summarizing concrete facts stated in those excerpts (names, units, places). "
+                "Do not refuse unless the excerpts are truly empty of relevant facts."
             )
         user_llm = _wrap_user_with_rag_context(context, user_plain)
         _attach_llm_visibility_meta(meta, user_llm, len(context))
@@ -531,7 +617,11 @@ def chat_completion(request):
 
         system_text, user_llm, rag_meta = _prepare_chat_prompts(rag_q, plain_for_rag)
         ollama_messages: list = [{"role": "system", "content": system_text}]
-        if last_user_idx is None:
+        if rag_meta.get("reason") == RAG_META_REASON_SKIPPED_SMALLTALK:
+            ollama_messages.append(
+                {"role": "user", "content": _trim_last_user_for_llm(user_llm)}
+            )
+        elif last_user_idx is None:
             for m in parsed:
                 ollama_messages.append(m)
             ollama_messages.append(
@@ -590,15 +680,17 @@ def _chat_with_db(request, body: dict, client_uuid: uuid.UUID) -> JsonResponse:
     rag_q = _compose_rag_search_query(message, prior_user_texts)
     system_text, user_llm, rag_meta = _prepare_chat_prompts(rag_q, message)
     ollama_messages: list = [{"role": "system", "content": system_text}]
-    prior_window = prior[-CHAT_HISTORY_MAX_MESSAGES:]
-    for m in prior_window:
-        if m.role in ("user", "assistant") and m.content.strip():
-            ollama_messages.append(
-                {
-                    "role": m.role,
-                    "content": _trim_message_for_llm(m.content),
-                }
-            )
+    # Greetings / thanks: do not inject prior turns — models echo previous bad RAG refusals.
+    if rag_meta.get("reason") != RAG_META_REASON_SKIPPED_SMALLTALK:
+        prior_window = prior[-CHAT_HISTORY_MAX_MESSAGES:]
+        for m in prior_window:
+            if m.role in ("user", "assistant") and m.content.strip():
+                ollama_messages.append(
+                    {
+                        "role": m.role,
+                        "content": _trim_message_for_llm(m.content),
+                    }
+                )
     ollama_messages.append(
         {"role": "user", "content": _trim_last_user_for_llm(user_llm)}
     )

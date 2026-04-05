@@ -4,7 +4,7 @@
 #
 # Servisler:
 #   1) acu-chatbot-db       → PostgreSQL
-#   2) acu-chatbot-ollama  → Ollama (phi3:mini; Docker Memory artırın)
+#   2) acu-chatbot-ollama  → Ollama (llama3.2:3b; ilk açılışta indirir; Docker RAM ~8GB+ önerilir)
 #   3) acu-chatbot-backend → Django
 #   4) acu-chatbot-frontend→ Next.js (tarayıcı: FRONTEND_HOST_PORT, varsayılan 3000; meşgulse .env’de 3001)
 
@@ -15,7 +15,7 @@ services:
     entrypoint: ["/bin/sh", "/ollama-entrypoint.sh"]
     command: []
     environment:
-      OLLAMA_PULL_MODEL: ${OLLAMA_MODEL:-phi3:mini}
+      OLLAMA_PULL_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
     volumes:
       - ollama_data:/root/.ollama
       - ./scripts/ollama-entrypoint.sh:/ollama-entrypoint.sh:ro
@@ -62,9 +62,9 @@ services:
       POSTGRES_PORT: "5432"
       ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1,backend}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-phi3:mini}
-      OLLAMA_NUM_PREDICT: ${OLLAMA_NUM_PREDICT:-96}
-      OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-1024}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
+      OLLAMA_NUM_PREDICT: ${OLLAMA_NUM_PREDICT:-384}
+      OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-4096}
       OLLAMA_HTTP_TIMEOUT: ${OLLAMA_HTTP_TIMEOUT:-120}
     ports:
       - "${BACKEND_HOST_PORT:-8000}:8000"

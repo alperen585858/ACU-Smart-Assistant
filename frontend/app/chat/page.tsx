@@ -1,5 +1,7 @@
 "use client";
 
+import Image from "next/image";
+import Link from "next/link";
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 
 type RagSource = {
@@ -31,6 +33,8 @@ type Message = {
   content: string;
   timestamp: Date;
   rag?: RagMeta;
+  /** Assistant only: seconds from user send to reply received */
+  latencySec?: number;
 };
 
 type SessionMeta = {
@@ -60,9 +64,11 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [typingElapsedSec, setTypingElapsedSec] = useState(0);
   const [historyOpen, setHistoryOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const requestStartRef = useRef<number | null>(null);
 
   const apiBase = (
     process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000"
@@ -184,7 +190,22 @@ export default function ChatPage() {
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages, activeId]);
+  }, [messages, activeId, isLoading, typingElapsedSec]);
+
+  useEffect(() => {
+    if (!isLoading) {
+      setTypingElapsedSec(0);
+      return;
+    }
+    const start = requestStartRef.current ?? performance.now();
+    requestStartRef.current = start;
+    const tick = () => {
+      setTypingElapsedSec((performance.now() - start) / 1000);
+    };
+    tick();
+    const id = window.setInterval(tick, 100);
+    return () => window.clearInterval(id);
+  }, [isLoading]);
 
   useEffect(() => {
     const ta = textareaRef.current;
@@ -256,6 +277,8 @@ export default function ChatPage() {
       timestamp: new Date(),
     };
     setInput("");
+    requestStartRef.current = performance.now();
+    setMessages((prev) => [...prev, userMessage]);
     setIsLoading(true);
 
     const chatTimeoutMs = Number(
@@ -313,19 +336,26 @@ export default function ChatPage() {
       window.clearTimeout(timeoutId);
     }
 
+    const latencySec =
+      requestStartRef.current != null
+        ? Math.round(((performance.now() - requestStartRef.current) / 1000) * 10) / 10
+        : undefined;
+    requestStartRef.current = null;
+
     if (ok && sidOut) {
       setActiveId(sidOut);
       localStorage.setItem(LAST_SESSION_KEY, sidOut);
       const loaded = await loadMessages(sidOut);
       if (!loaded) {
-        setMessages([
-          userMessage,
+        setMessages((prev) => [
+          ...prev,
           {
             id: crypto.randomUUID(),
             role: "assistant",
             content: replyText,
             timestamp: new Date(),
             rag: data.rag,
+            latencySec,
           },
         ]);
       } else if (data.rag) {
@@ -333,7 +363,17 @@ export default function ChatPage() {
           if (prev.length === 0) return prev;
           const last = prev[prev.length - 1];
           if (last.role !== "assistant") return prev;
-          return [...prev.slice(0, -1), { ...last, rag: data.rag }];
+          return [
+            ...prev.slice(0, -1),
+            { ...last, rag: data.rag, latencySec: latencySec ?? last.latencySec },
+          ];
+        });
+      } else if (latencySec != null) {
+        setMessages((prev) => {
+          if (prev.length === 0) return prev;
+          const last = prev[prev.length - 1];
+          if (last.role !== "assistant") return prev;
+          return [...prev.slice(0, -1), { ...last, latencySec }];
         });
       }
     } else {
@@ -343,8 +383,9 @@ export default function ChatPage() {
         content: replyText,
         timestamp: new Date(),
         rag: data.rag,
+        latencySec,
       };
-      setMessages((prev) => [...prev, userMessage, assistantMessage]);
+      setMessages((prev) => [...prev, assistantMessage]);
     }
 
     await refreshSessionList();
@@ -361,13 +402,20 @@ export default function ChatPage() {
 
   return (
     <div className="relative min-h-screen overflow-hidden">
-      <a
+      <Link
         href="/"
         aria-label="Ana sayfa"
         className="fixed left-5 top-5 z-30 flex items-center"
       >
-        <img src="/logo.svg" alt="ACU" className="h-9 w-auto" />
-      </a>
+        <Image
+          src="/logo.svg"
+          alt="ACU"
+          width={120}
+          height={36}
+          className="h-9 w-auto"
+          unoptimized
+        />
+      </Link>
 
       <div
         className="pointer-events-none fixed inset-0 overflow-hidden"
@@ -574,6 +622,19 @@ export default function ChatPage() {
                           <p className="whitespace-pre-wrap text-[15px] leading-relaxed">
                             {msg.content}
                           </p>
+                          {msg.role === "assistant" &&
+                            typeof msg.latencySec === "number" && (
+                              <p className="mt-2 flex items-center gap-1.5 text-[11px] font-medium tabular-nums tracking-tight text-[#0b2e3b]/45">
+                                <span
+                                  className="inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500/80"
+                                  aria-hidden
+                                />
+                                Yanıt süresi{" "}
+                                <span className="rounded-md bg-[#0b2e3b]/[0.06] px-1.5 py-0.5 font-mono text-[#0b2e3b]/70">
+                                  {msg.latencySec.toFixed(1)} sn
+                                </span>
+                              </p>
+                            )}
                           {msg.role === "assistant" && msg.rag && (
                             <div className="mt-2 border-t border-[#0b2e3b]/12 pt-2 text-left text-[11px] leading-snug text-[#0b2e3b]/60">
                               {typeof msg.rag.indexed_chunks_in_db === "number" ? (
@@ -587,9 +648,9 @@ export default function ChatPage() {
                                   <strong>{msg.rag.context_chars_sent ?? 0}</strong> karakter ·
                                   Son kullanıcı mesajı (LLM) toplam{" "}
                                   <strong>{msg.rag.llm_user_turn_chars ?? 0}</strong> karakter ·
-                                  Bağlam bloklu mu:{" "}
+                                  Bağlam LLM mesajında:{" "}
                                   <strong>
-                                    {msg.rag.context_block_in_llm ? "evet" : "hayır"}
+                                    {msg.rag.context_block_in_llm ? "var" : "yok"}
                                   </strong>
                                 </p>
                               ) : null}
@@ -648,10 +709,23 @@ export default function ChatPage() {
 
                     {isLoading && (
                       <div className="flex justify-start animate-fade-in">
-                        <div className="flex items-center gap-2 rounded-3xl bg-white/60 px-4 py-3 ring-1 ring-white/40">
-                          <span className="flex h-2 w-2 animate-bounce rounded-full bg-cyan-600 [animation-delay:-0.3s]" />
-                          <span className="flex h-2 w-2 animate-bounce rounded-full bg-cyan-600 [animation-delay:-0.15s]" />
-                          <span className="flex h-2 w-2 animate-bounce rounded-full bg-cyan-600" />
+                        <div className="flex items-center gap-4 rounded-3xl border border-white/35 bg-gradient-to-r from-white/70 to-white/55 px-5 py-3.5 shadow-sm ring-1 ring-cyan-500/10 backdrop-blur-sm">
+                          <div className="flex items-center gap-1.5" aria-hidden>
+                            <span className="h-2 w-2 animate-bounce rounded-full bg-gradient-to-br from-cyan-500 to-cyan-600 [animation-delay:-0.32s]" />
+                            <span className="h-2 w-2 animate-bounce rounded-full bg-gradient-to-br from-cyan-500 to-cyan-600 [animation-delay:-0.16s]" />
+                            <span className="h-2 w-2 animate-bounce rounded-full bg-gradient-to-br from-cyan-500 to-cyan-600" />
+                          </div>
+                          <div className="flex min-w-[5.5rem] flex-col leading-none">
+                            <span className="text-[10px] font-semibold uppercase tracking-wider text-[#0b2e3b]/40">
+                              Yanıt bekleniyor
+                            </span>
+                            <span className="mt-1 font-mono text-lg font-semibold tabular-nums tracking-tight text-cyan-800">
+                              {typingElapsedSec.toFixed(1)}
+                              <span className="ml-0.5 text-sm font-medium text-[#0b2e3b]/45">
+                                sn
+                              </span>
+                            </span>
+                          </div>
                         </div>
                       </div>
                     )}
