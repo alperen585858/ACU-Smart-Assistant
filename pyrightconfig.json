@@ -5,14 +5,15 @@
     "frontend",
     "**/.venv",
     ".venv",
-    "**/migrations",
-    "**/management"
+    "**/migrations"
   ],
   "venvPath": ".",
   "venv": ".venv",
   "pythonVersion": "3.12",
   "typeCheckingMode": "basic",
   "reportMissingImports": false,
-  "reportMissingTypeStubs": false
+  "reportMissingTypeStubs": false,
+  "reportMissingModuleSource": false,
+  "reportAttributeAccessIssue": false
 }
 

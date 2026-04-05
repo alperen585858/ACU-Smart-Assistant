@@ -11,30 +11,12 @@ from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_http_methods
 
-from pgvector.django import CosineDistance
-
 from .models import ChatMessage, ChatSession
-from core.embeddings import embed_query
 from core.models import DocumentChunk
+from core.rag_keywords import RAG_DEPT_OR_FACULTY_INTENT_RE, RAG_STEM_OR_ENGINEERING_INTENT_RE
+from core.rag_retrieval import search_document_chunks
 
 LLM_BACKEND = os.environ.get("LLM_BACKEND", "ollama")
-RAG_MAX_CHARS = 2000
-RAG_TOP_K = int(os.environ.get("RAG_TOP_K", "10"))
-# Cosine distance (lower = closer). 0.55 was too strict—correct pages often sat at 0.56–0.65.
-RAG_MAX_DISTANCE = float(os.environ.get("RAG_MAX_DISTANCE", "0.62"))
-# When no chunk passes the threshold, still send the closest K (model must follow “only if in CONTEXT”).
-RAG_RELAX_ON_EMPTY = os.environ.get("RAG_RELAX_ON_EMPTY", "true").lower() in (
-    "1",
-    "true",
-    "yes",
-)
-# Merge chunks whose text contains query keywords (helps Turkish/synonym misses vs BGE-en only).
-RAG_KEYWORD_BOOST = os.environ.get("RAG_KEYWORD_BOOST", "true").lower() in (
-    "1",
-    "true",
-    "yes",
-)
-RAG_SNIPPET_CHARS = max(400, int(os.environ.get("RAG_SNIPPET_CHARS", "900")))
 
 # Ollama settings
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
@@ -42,7 +24,7 @@ OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2:3b")
 # Defaults must fit RAG system prompt + Context (~2k chars) + history; tiny ctx/predict
 # causes truncation so the model never sees the full address and may refuse or hallucinate.
 OLLAMA_NUM_PREDICT = int(os.environ.get("OLLAMA_NUM_PREDICT", "384"))
-OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "4096"))
+OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "8192"))
 OLLAMA_HTTP_TIMEOUT = int(os.environ.get("OLLAMA_HTTP_TIMEOUT", "240"))
 OLLAMA_KEEP_ALIVE = os.environ.get("OLLAMA_KEEP_ALIVE", "30m")
 OLLAMA_TEMPERATURE = float(os.environ.get("OLLAMA_TEMPERATURE", "0.15"))
@@ -59,15 +41,19 @@ CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 SYSTEM_BASE = (
     "You are the official website assistant for Acıbadem Mehmet Ali Aydınlar University (ACU). "
     "LANGUAGE: English only. Never use Turkish unless the user pasted Turkish inside their message. "
-    "Be direct and factual. "
+    "Be factual but approachable: in English, sound like a helpful human assistant, not a terse FAQ bot. "
+    "When you successfully answer in English (not when using the exact refusal below), end with one short "
+    "warm line offering further help, e.g. 'Is there anything else I can help you with?' or "
+    "'Let me know if you’d like details on programs, admissions, or campus life.' "
     "GROUNDING: Use ONLY the Context block below when it is present. Quote or paraphrase it; "
     "do not invent addresses, policies, disclaimers, or refusals. "
     "Official campus or unit postal addresses, phone numbers, and emails printed in Context are "
     "public university contact data—state them when the user asks; do not refuse as \"private\". "
     "Do not mention OpenAI, Anthropic, Microsoft, training data, or content policies. "
-    "If Context is missing or does not contain the answer, reply exactly: "
+    "If Context is missing or does not contain the answer, reply exactly (no extra sentences before or after): "
     "\"I don't have that information in the crawled pages. Try running a data refresh or rephrase your question.\" "
-    "If the question is out of scope for the website content, say so in one sentence."
+    "If the question is out of scope for the website content, say so in one warm sentence and offer to help "
+    "with ACU topics instead."
 )
 
 # When RAG hits, put crawled text in the *last user* turn (not only at end of system).
@@ -75,24 +61,52 @@ SYSTEM_BASE = (
 # while long chat history remained, so the model answered from pretrained “Microsoft / 2023” habits.
 SYSTEM_RAG_USER_WRAPPER = (
     "You are the official Acıbadem Mehmet Ali Aydınlar University (ACU) website assistant. "
-    "LANGUAGE: English only unless the user pasted Turkish inside ===QUESTION=== below. "
-    "The user message has ===CONTEXT=== (excerpts from crawled acibadem.edu.tr) and ===QUESTION===. "
-    "Rules: (1) Every factual claim must be supported by ===CONTEXT===; do not invent or guess. "
-    "(2) Do not add rankings, statistics, dates, program names, fees, or partner universities unless "
-    "those exact facts appear in ===CONTEXT===. Do not fill gaps from memory. "
-    "(3) Default: 2–4 short sentences. If ===QUESTION=== asks for a broad overview, 'everything', "
-    "'all you know', or similar, and ===CONTEXT=== is non-empty, summarize supported facts from "
-    "===CONTEXT=== in up to 8 short sentences—still only facts present in those excerpts. "
+    "LANGUAGE: Default to polished, natural English for English questions—that is the usual case. "
+    "Use the same warm, human assistant tone in English as you would in Turkish: never dry or telegraphic. "
+    "If the user's question is clearly in Turkish only, answer in polite Turkish at the same warmth level. "
+    "The user message contains crawled website excerpts, then the user's question (marked with internal "
+    "delimiters for your eyes only). "
+    "CRITICAL OUTPUT RULES: Never write ===CONTEXT===, ===QUESTION===, ===END_QUESTION===, or any similar "
+    "delimiter text in your answer. Never begin with 'According to ===CONTEXT===' or 'Based on ===CONTEXT==='. "
+    "STYLE (English and Turkish): Warm, courteous, professional—like helpful front-desk staff. "
+    "For ENGLISH replies: you may open with one short friendly line when it fits, e.g. 'Happy to help!', "
+    "'Sure—here’s what I found on the website.', 'I’d be glad to help with that.', then give the facts. "
+    "For Turkish, e.g. 'Elbette, yardımcı olayım.' Use fluent complete sentences; avoid robotic or blunt FAQ tone. "
+    "For fee or program lists you may use short bullet points only when many items must be shown; "
+    "otherwise prefer a short paragraph. Do not paste raw bracket titles like [Page title | Site]; "
+    "say the source naturally (e.g. 'on the tuition page'). "
+    "CLOSING: For every normal factual answer (not the exact refusal in rule 6), end with exactly one short "
+    "follow-up offer in the SAME language as your answer. "
+    "ENGLISH closings (vary these): 'Is there anything else I can help you with?', "
+    "'Let me know if you’d like more detail on programs, fees, or campus life.', "
+    "'Feel free to ask if you have other questions about ACU.' "
+    "Turkish examples: 'Başka bir konuda yardımcı olmamı ister misiniz?', "
+    "'Programlar veya kayıt hakkında sormak istediğiniz bir şey olursa yazabilirsiniz.' "
+    "Keep the closing brief. Do not add it after the exact refusal sentence in rule 6. "
+    "Rules: (1) Every factual claim must be supported by the excerpts; do not invent or guess. "
+    "(2) Do not invent rankings, statistics, dates, fees, or partner universities. "
+    "You MAY name faculties, schools, departments, and programs exactly as written in the excerpts. "
+    "Do not fill gaps from memory. "
+    "(3) Default: about 2–5 short sentences including optional one-line intro and one-line closing offer, "
+    "plus the factual core. If the user asks for a broad overview, 'everything', or similar, and "
+    "excerpts are non-empty, summarize supported facts in up to 8 short sentences—only facts in the excerpts "
+    "(you may still add a brief closing offer after). "
     "(4) Never say you are from Microsoft/OpenAI/Anthropic; never mention training data, browsing "
     "the live web, or a knowledge cutoff year. "
-    "(5) If ===CONTEXT=== is non-empty and the user asks generally what the university is or wants "
-    "a wide summary, you MUST answer from ===CONTEXT=== (do not refuse). "
-    "(6) Use the refusal ONLY when ===CONTEXT=== is empty OR the user asks for one specific fact "
-    "that does not appear anywhere in ===CONTEXT===. Refusal text (exact, nothing before or after): "
+    "(5) If excerpts are non-empty and the user asks generally what the university is or wants a wide summary, "
+    "you MUST answer from those excerpts (do not refuse). "
+    "(6) Use the refusal ONLY when excerpts are empty OR the user asks for one specific fact that does not "
+    "appear in the excerpts. Refusal text (exact—output this sentence alone with no greeting and no closing offer): "
     "\"I don't have that information in the crawled pages. Try running a data refresh or rephrase your question.\" "
-    "(7) Never append topics (e.g. scholarships) to the refusal unless that topic is in ===QUESTION===."
+    "(7) Never append topics (e.g. scholarships) to the refusal unless the user asked about them. "
+    "(8) If the user asks for departments, faculties, schools, or programs, list every such unit named in "
+    "the excerpts; if incomplete, list what is present and note the crawl may be partial—never claim nothing "
+    "is listed when the excerpts name any unit. "
+    "(9) If the user names a specific field (e.g. Computer Engineering) and that phrase or a clear Turkish "
+    "equivalent appears in the excerpts, affirm it from the text; do not claim it is missing unless those "
+    "strings truly do not appear."
 )
-RAG_USER_BUBBLE_MAX_CHARS = max(2000, int(os.environ.get("RAG_USER_BUBBLE_MAX_CHARS", "4500")))
+RAG_USER_BUBBLE_MAX_CHARS = max(2000, int(os.environ.get("RAG_USER_BUBBLE_MAX_CHARS", "14000")))
 
 RAG_META_REASON_SKIPPED_SMALLTALK = "skipped_smalltalk_no_rag"
 
@@ -105,10 +119,13 @@ _BROAD_OVERVIEW_QUESTION_RE = re.compile(
 # Greetings / thanks — do not run RAG (irrelevant chunks force bogus "data refresh" answers).
 SYSTEM_SMALLTALK = (
     "You are the official website assistant for Acıbadem Mehmet Ali Aydınlar University (ACU). "
-    "LANGUAGE: English only unless the user wrote in Turkish. "
+    "LANGUAGE: If the user wrote in English, reply entirely in warm, natural English. "
+    "Only use Turkish if their message is clearly in Turkish. "
     "The user sent a short greeting or courtesy, not a factual question about the university. "
-    "Reply with 1–2 brief, friendly sentences: greet back and offer help with ACU topics "
-    "(programs, admissions, campus, contact). "
+    "Reply with 2–3 brief, warm sentences: greet back, say you’re happy to help with ACU, and invite a next step. "
+    "In ENGLISH include a gentle offer such as 'What would you like to know?' or "
+    "'How can I help you today—programs, admissions, campus, or contact?' "
+    "In Turkish you might use 'Ne konuda yardımcı olayım?' or similar. "
     "Do not mention crawled pages, data refresh, scholarships, or training data unless they asked. "
     "Do not mention OpenAI, Anthropic, or Microsoft. "
     "Do not repeat or mimic wording from earlier assistant messages in this chat."
@@ -151,30 +168,6 @@ def _should_skip_rag_for_smalltalk(user_plain: str) -> bool:
     return True
 
 
-_RAG_KEYWORD_STOP = frozenset(
-    """
-    what when where which who how why the and for with about from that this have does did you your
-    are was were please dont not tell can could would should university universite universitesi
-    acibadem acıbadem mehmet ali aydinlar aydınlar tell lie know please more some any very just
-    like into than then them they their there here hakkında nedir nelerdir nasıl hangi şey
-    """.split()
-)
-
-
-def _rag_keywords_from_query(text: str, max_terms: int = 5) -> list[str]:
-    raw = (text or "").lower()
-    words = re.findall(r"[a-zA-ZğüşıöçĞÜŞİÖÇ]{4,}", raw)
-    out: list[str] = []
-    for w in words:
-        if w in _RAG_KEYWORD_STOP:
-            continue
-        if w not in out:
-            out.append(w)
-        if len(out) >= max_terms:
-            break
-    return out
-
-
 def _compose_rag_search_query(
     current_message: str, prior_user_messages: list[str]
 ) -> str:
@@ -202,91 +195,35 @@ def _compose_rag_search_query(
         re.IGNORECASE,
     ):
         merged = f"{merged}\npostal address campus location contact Istanbul Kerem Aydinlar"
+    # Typo-tolerant "department" + Turkish faculty terms — BGE often misses these vs random pages.
+    if RAG_DEPT_OR_FACULTY_INTENT_RE.search(merged):
+        merged = (
+            f"{merged}\nfaculty school department departments Fakülte Tıp Mühendislik "
+            "Sağlık Bilimleri programs schools list"
+        )
+    if RAG_STEM_OR_ENGINEERING_INTENT_RE.search(merged):
+        merged = (
+            f"{merged}\nBilgisayar Mühendisliği Computer Engineering undergraduate "
+            "faculty engineering program degree"
+        )
     return merged
 
 
-def _search_pages_with_meta(query: str) -> tuple[str, list[dict], bool, bool]:
-    """
-    Returns (context_text, sources, used_relaxed_fallback, embedding_ok).
-    """
-    query = (query or "").strip()
-    if not query:
-        return "", [], False, True
-
-    query_vector = embed_query(query)
-    if not query_vector:
-        return "", [], False, False
-
-    base_qs = (
-        DocumentChunk.objects.annotate(distance=CosineDistance("embedding", query_vector))
-        .order_by("distance")
-    )
-
-    has_rows = DocumentChunk.objects.exists()
-    used_relaxed = False
-    if RAG_RELAX_ON_EMPTY and has_rows:
-        vector_chunks = list(base_qs.filter(distance__lte=RAG_MAX_DISTANCE)[:RAG_TOP_K])
-        if not vector_chunks:
-            vector_chunks = list(base_qs[:RAG_TOP_K])
-            used_relaxed = bool(vector_chunks)
-    else:
-        vector_chunks = list(base_qs.filter(distance__lte=RAG_MAX_DISTANCE)[:RAG_TOP_K])
-
-    # (chunk, distance) — keyword rows use a nominal distance for ordering/display only
-    ranked: list[tuple] = []
-    seen_pk: set[int] = set()
-    for ch in vector_chunks:
-        pk = ch.pk
-        if pk not in seen_pk:
-            seen_pk.add(pk)
-            ranked.append((ch, float(ch.distance)))
-
-    if RAG_KEYWORD_BOOST and has_rows:
-        for term in _rag_keywords_from_query(query):
-            for ch in DocumentChunk.objects.filter(content__icontains=term)[:3]:
-                pk = ch.pk
-                if pk not in seen_pk:
-                    seen_pk.add(pk)
-                    ranked.append((ch, 0.75))
-
-    context_parts: list[str] = []
-    sources: list[dict] = []
-    total = 0
-    seen_urls: set[str] = set()
-    seen_chunk_ids: set[int] = set()
-
-    for chunk, dist_val in ranked:
-        if chunk.source_url in seen_urls and total > int(RAG_MAX_CHARS * 0.7):
-            continue
-        seen_urls.add(chunk.source_url)
-
-        snippet = (chunk.content or "")[:RAG_SNIPPET_CHARS]
-        if total + len(snippet) > RAG_MAX_CHARS:
-            break
-        title = chunk.page_title or chunk.source_url
-        context_parts.append(f"[{title}]\n{snippet}")
-        total += len(snippet)
-        cid = getattr(chunk, "pk", None)
-        if cid is not None and cid not in seen_chunk_ids:
-            seen_chunk_ids.add(cid)
-            sources.append(
-                {
-                    "url": chunk.source_url,
-                    "title": (title or "")[:200],
-                    "cosine_distance": round(float(dist_val), 4),
-                }
-            )
-
-    return "\n\n".join(context_parts), sources, used_relaxed, True
+def _search_pages_with_meta(composed_query: str, raw_user_query: str = "") -> tuple[str, list[dict], bool, bool]:
+    """Returns (context_text, sources, used_relaxed_fallback, embedding_ok)."""
+    return search_document_chunks(composed_query, raw_user_query or None)
 
 
 def _wrap_user_with_rag_context(context: str, user_plain: str) -> str:
     footer = (
         "\n===END_QUESTION===\n"
-        "Answer in English using only facts from ===CONTEXT===. "
-        "If the question is broad or asks for 'everything', summarize what ===CONTEXT=== actually says. "
-        "Use the system-message refusal only when ===CONTEXT=== is empty or the specific fact is missing. "
-        "If you refuse, output the refusal sentence alone with no added clauses."
+        "Now write your reply to the user. Use only facts from the excerpts above. "
+        "If the question is in English, write in warm, natural English (not terse): optional one-line opener, "
+        "then facts, then one short English offer to help further. Same idea in Turkish for Turkish questions. "
+        "Do not repeat the words ===CONTEXT=== or ===QUESTION=== in your reply. "
+        "If the question is broad, summarize what the excerpts actually state. "
+        "Follow the system message for opening and closing (except when using the exact refusal). "
+        "Use the system refusal sentence only when excerpts are empty or the specific fact is missing."
     )
     body = (
         f"===CONTEXT===\n{context.strip()}\n===QUESTION===\n{user_plain.strip()}{footer}"
@@ -333,7 +270,7 @@ def _prepare_chat_prompts(rag_query: str, user_plain: str) -> tuple[str, str, di
         _attach_llm_visibility_meta(meta, user_llm, 0)
         return SYSTEM_SMALLTALK, user_llm, meta
 
-    context, sources, relaxed, emb_ok = _search_pages_with_meta(rag_query)
+    context, sources, relaxed, emb_ok = _search_pages_with_meta(rag_query, user_plain)
     meta: dict = {
         "embedding_ok": emb_ok,
         "chunks_used": len(sources),
@@ -355,15 +292,27 @@ def _prepare_chat_prompts(rag_query: str, user_plain: str) -> tuple[str, str, di
         system = SYSTEM_RAG_USER_WRAPPER
         if relaxed:
             system += (
-                "\n\nNote: Strict vector match was weak; ===CONTEXT=== is still the closest crawl text. "
-                "For broad or overview questions, summarize facts it contains. "
-                "For one narrow fact, cite it only if that fact clearly appears in ===CONTEXT===."
+                "\n\nNote: Strict vector match was weak; the excerpts are still the closest crawl text. "
+                "For broad or overview questions, summarize facts they contain. "
+                "For one narrow fact, state it only if it clearly appears in the excerpts."
             )
         if _BROAD_OVERVIEW_QUESTION_RE.search(user_plain):
             system += (
-                "\n\nHIGH PRIORITY: The user asked for a broad summary. ===CONTEXT=== is non-empty — "
-                "answer by summarizing concrete facts stated in those excerpts (names, units, places). "
+                "\n\nHIGH PRIORITY: The user asked for a broad summary. The excerpts are non-empty — "
+                "answer by summarizing concrete facts stated there (names, units, places). "
                 "Do not refuse unless the excerpts are truly empty of relevant facts."
+            )
+        if RAG_DEPT_OR_FACULTY_INTENT_RE.search(user_plain):
+            system += (
+                "\n\nThe user asks for departments/faculties/schools. Extract and list every distinct "
+                "faculty, school, or department name that appears in the excerpts; if incomplete, "
+                "still list what is present."
+            )
+        if RAG_STEM_OR_ENGINEERING_INTENT_RE.search(user_plain):
+            system += (
+                "\n\nThe user asked about a degree, engineering discipline, or program. If the excerpts "
+                "name that program in English or Turkish, answer from those lines only; say it is not "
+                "mentioned only if neither the English nor Turkish program name appears there."
             )
         user_llm = _wrap_user_with_rag_context(context, user_plain)
         _attach_llm_visibility_meta(meta, user_llm, len(context))
@@ -414,6 +363,30 @@ def _trim_message_for_llm(text: str, max_chars: int = CHAT_MESSAGE_MAX_CHARS) ->
     return t[: max_chars - 1] + "…"
 
 
+def _sanitize_assistant_reply(text: str) -> str:
+    """Strip prompt delimiter leaks and clumsy phrasing small models often echo."""
+    t = (text or "").strip()
+    if not t:
+        return t
+    # Run before stripping ===CONTEXT=== so patterns still match.
+    t = re.sub(
+        r"(?i)according\s+to\s*,?\s*={3}\s*CONTEXT\s*={3}\s*[, ]*",
+        "Based on the university website, ",
+        t,
+    )
+    t = re.sub(
+        r"(?i)based\s+on\s*,?\s*={3}\s*CONTEXT\s*={3}\s*[, ]*",
+        "Based on the university website, ",
+        t,
+    )
+    for leak in ("===CONTEXT===", "===QUESTION===", "===END_QUESTION==="):
+        t = t.replace(leak, "")
+    t = re.sub(r"(?i)^according\s+to\s*,\s*", "Based on the university website, ", t)
+    t = re.sub(r"[ \t]{2,}", " ", t)
+    t = re.sub(r"\n{3,}", "\n\n", t)
+    return t.strip()
+
+
 def _parse_client_id(raw: str | None):
     if not raw:
         return None
@@ -455,9 +428,9 @@ def _call_claude(messages: list) -> tuple[str | None, str | None]:
             data = json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
         detail = e.read().decode(errors="replace")
-        return None, f"Claude API hatası: {detail}"
+        return None, f"Claude API error: {detail}"
     except urllib.error.URLError as e:
-        return None, f"Claude API bağlantı hatası: {e.reason}"
+        return None, f"Claude API connection error: {e.reason}"
 
     content_blocks = data.get("content", [])
     reply = ""
@@ -466,7 +439,7 @@ def _call_claude(messages: list) -> tuple[str | None, str | None]:
             reply += block.get("text", "")
     reply = reply.strip()
     if not reply:
-        return None, "Claude boş yanıt döndü"
+        return None, "Claude returned an empty response"
     return reply, None
 
 
@@ -503,12 +476,12 @@ def _call_ollama(ollama_messages: list) -> tuple[str | None, str | None]:
         err = str(e.reason)
         if isinstance(e.reason, TimeoutError) or "timed out" in err.lower():
             return None, (
-                "Ollama yanıtı zaman aşımına uğradı. Docker RAM artırın, "
-                "OLLAMA_NUM_PREDICT azaltın veya modeli küçültün."
+                "Ollama response timed out. Try increasing Docker RAM, lowering "
+                "OLLAMA_NUM_PREDICT, or using a smaller model."
             )
         return None, err
     except socket.timeout:
-        return None, "Ollama zaman aşımı (socket). Sunucu veya model çok yavaş."
+        return None, "Ollama socket timeout. The server or model may be too slow."
 
     reply = (data.get("message") or {}).get("content", "").strip()
     if not reply:
@@ -518,8 +491,12 @@ def _call_ollama(ollama_messages: list) -> tuple[str | None, str | None]:
 
 def _call_llm(messages: list) -> tuple[str | None, str | None]:
     if LLM_BACKEND == "claude" and ANTHROPIC_API_KEY:
-        return _call_claude(messages)
-    return _call_ollama(messages)
+        reply, err = _call_claude(messages)
+    else:
+        reply, err = _call_ollama(messages)
+    if err or not reply:
+        return reply, err
+    return _sanitize_assistant_reply(reply), None
 
 
 @csrf_exempt
@@ -529,7 +506,7 @@ def list_sessions(request):
         request.GET.get("client_id") or request.headers.get("X-Client-Id")
     )
     if cid is None:
-        return JsonResponse({"error": "client_id gerekli (UUID)"}, status=400)
+        return JsonResponse({"error": "client_id is required (UUID)"}, status=400)
     sessions = ChatSession.objects.filter(client_id=cid)[:100]
     return JsonResponse(
         {
@@ -552,7 +529,7 @@ def session_detail(request, pk):
         request.GET.get("client_id") or request.headers.get("X-Client-Id")
     )
     if cid is None:
-        return JsonResponse({"error": "client_id gerekli (query, UUID)"}, status=400)
+        return JsonResponse({"error": "client_id is required (query, UUID)"}, status=400)
 
     session = get_object_or_404(ChatSession, pk=pk, client_id=cid)
 
@@ -655,7 +632,11 @@ def chat_completion(request):
 
     reply_text, err = _call_llm(ollama_messages)
     if err:
-        status = 504 if "zaman aşımı" in err.lower() or "timeout" in err.lower() else 502
+        status = (
+            504
+            if "timeout" in err.lower() or "timed out" in err.lower()
+            else 502
+        )
         return JsonResponse({"error": err, "rag": rag_meta}, status=status)
     return JsonResponse({"reply": reply_text, "rag": rag_meta})
 
@@ -670,10 +651,10 @@ def _chat_with_db(request, body: dict, client_uuid: uuid.UUID) -> JsonResponse:
         try:
             sid = uuid.UUID(str(session_id_raw))
         except (ValueError, TypeError):
-            return JsonResponse({"error": "session_id geçersiz UUID"}, status=400)
+            return JsonResponse({"error": "session_id is not a valid UUID"}, status=400)
         session = get_object_or_404(ChatSession, pk=sid, client_id=client_uuid)
     else:
-        session = ChatSession.objects.create(client_id=client_uuid, title="Yeni sohbet")
+        session = ChatSession.objects.create(client_id=client_uuid, title="New chat")
 
     prior = list(session.messages.all())
     prior_user_texts = [m.content for m in prior if m.role == "user"]
@@ -699,7 +680,7 @@ def _chat_with_db(request, body: dict, client_uuid: uuid.UUID) -> JsonResponse:
         session=session, role="user", content=message
     )
     title_changed = False
-    if session.title == "Yeni sohbet" and len(prior) == 0:
+    if session.title == "New chat" and len(prior) == 0:
         session.title = message[:197] + ("…" if len(message) > 200 else "")
         session.save(update_fields=["title"])
         title_changed = True
@@ -708,9 +689,13 @@ def _chat_with_db(request, body: dict, client_uuid: uuid.UUID) -> JsonResponse:
     if err:
         user_row.delete()
         if title_changed:
-            session.title = "Yeni sohbet"
+            session.title = "New chat"
             session.save(update_fields=["title"])
-        status = 504 if "zaman aşımı" in err.lower() or "timeout" in err.lower() else 502
+        status = (
+            504
+            if "timeout" in err.lower() or "timed out" in err.lower()
+            else 502
+        )
         return JsonResponse(
             {"error": err, "session_id": str(session.id), "rag": rag_meta},
             status=status,

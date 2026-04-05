@@ -1,6 +1,8 @@
 asgiref==3.11.1
 beautifulsoup4==4.12.3
 Django==6.0.3
+django-stubs==6.0.2
+django-stubs-ext==6.0.2
 django-cors-headers==4.9.0
 lxml==5.3.0
 psycopg2-binary==2.9.9

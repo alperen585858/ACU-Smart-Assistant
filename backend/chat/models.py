@@ -6,7 +6,7 @@ from django.db import models
 class ChatSession(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     client_id = models.UUIDField(db_index=True)
-    title = models.CharField(max_length=500, default="Yeni sohbet")
+    title = models.CharField(max_length=500, default="New chat")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

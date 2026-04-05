@@ -1,0 +1,342 @@
+"""
+Vector RAG retrieval: multi-query embeddings, merged distances, wide candidate pool,
+rerank (word overlap + optional pg_trgm), then char-budget fill.
+"""
+
+from __future__ import annotations
+
+import re
+
+from django.db import connection
+from pgvector.django import CosineDistance
+
+from core.embeddings import embed_texts
+from core.models import DocumentChunk
+from core.rag_config import (
+    RAG_KEYWORD_BOOST,
+    RAG_LEXICAL_WEIGHT,
+    RAG_MAX_CHARS,
+    RAG_MAX_CHUNKS_PER_URL,
+    RAG_MAX_DISTANCE,
+    RAG_MULTI_EMBED,
+    RAG_MULTI_EMBED_KEYWORD_LINE,
+    RAG_RELAX_ON_EMPTY,
+    RAG_RERANK_OVERLAP_WEIGHT,
+    RAG_SNIPPET_CHARS,
+    RAG_STEM_NOISE_URL_PENALTY,
+    RAG_TOP_K,
+    RAG_VECTOR_CANDIDATE_POOL,
+    RAG_VECTOR_FILL_EXTRA,
+)
+from core.rag_keywords import (
+    RAG_STEM_OR_ENGINEERING_INTENT_RE,
+    rag_keywords_from_query,
+    stem_engineering_boost_terms,
+    structured_list_boost_terms,
+)
+
+
+def _pg_trgm_available() -> bool:
+    if connection.vendor != "postgresql":
+        return False
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm')"
+            )
+            row = cursor.fetchone()
+            return bool(row and row[0])
+    except Exception:
+        return False
+
+
+def _query_token_set(composed: str, raw_user: str | None) -> set[str]:
+    blob = f"{composed} {raw_user or ''}".lower()
+    return {
+        t
+        for t in re.findall(r"[a-zA-ZğüşıöçĞÜŞİÖÇ]{4,}", blob)
+        if len(t) >= 4
+    }
+
+
+def _word_overlap_count(chunk_text: str, tokens: set[str]) -> int:
+    if not tokens or not chunk_text:
+        return 0
+    low = chunk_text.lower()
+    return sum(1 for t in tokens if t in low)
+
+
+def _embedding_variants(composed: str, raw_user: str | None) -> list[str]:
+    composed = (composed or "").strip()
+    variants: list[str] = []
+    if composed:
+        variants.append(composed)
+    if not RAG_MULTI_EMBED:
+        return variants
+    raw = (raw_user or "").strip()
+    if raw and raw.casefold() != composed.casefold():
+        variants.append(raw)
+    if RAG_MULTI_EMBED_KEYWORD_LINE:
+        kw = rag_keywords_from_query(composed)
+        if kw:
+            line = " ".join(kw) + " Acibadem Mehmet Ali Aydinlar University"
+            if line.casefold() not in {v.casefold() for v in variants}:
+                variants.append(line)
+    # Dedupe preserving order
+    seen: set[str] = set()
+    out: list[str] = []
+    for v in variants:
+        key = v.casefold()
+        if key not in seen:
+            seen.add(key)
+            out.append(v)
+    return out
+
+
+def _merge_best_distances(vectors: list[list[float]], per_vector_pool: int) -> dict[int, float]:
+    best: dict[int, float] = {}
+    for vec in vectors:
+        if not vec:
+            continue
+        qs = (
+            DocumentChunk.objects.annotate(distance=CosineDistance("embedding", vec))
+            .order_by("distance")[:per_vector_pool]
+        )
+        for ch in qs:
+            d = float(ch.distance)
+            pk = ch.pk
+            prev = best.get(pk)
+            if prev is None or d < prev:
+                best[pk] = d
+    return best
+
+
+# STEM: de-prioritize portal pages that mention many program names in passing.
+_STEM_LOW_VALUE_PAGE_RE = re.compile(
+    r"event|etkinlik|kariyer|career|duyur|announce|haber|news|kongre|congress|"
+    r"life-sciences|burs|scholar|tuition|fee|mezun|alumni|ilan|job|kampus\s*gez",
+    re.IGNORECASE,
+)
+
+
+def _stem_noise_penalty(url: str, title: str) -> float:
+    if RAG_STEM_NOISE_URL_PENALTY <= 0:
+        return 0.0
+    blob = f"{url or ''} {title or ''}"
+    if _STEM_LOW_VALUE_PAGE_RE.search(blob):
+        return RAG_STEM_NOISE_URL_PENALTY
+    return 0.0
+
+
+def _rerank_items(
+    items: list[tuple[DocumentChunk, float]],
+    composed: str,
+    raw_user: str | None,
+    stem_query: bool = False,
+) -> list[tuple[DocumentChunk, float]]:
+    if len(items) <= 1:
+        return items
+    tokens = _query_token_set(composed, raw_user)
+    trigram_q = f"{composed} {(raw_user or '').strip()}".strip()[:400]
+
+    sim_map: dict[int, float] = {}
+    if (
+        RAG_LEXICAL_WEIGHT > 0
+        and trigram_q
+        and _pg_trgm_available()
+    ):
+        from django.contrib.postgres.search import TrigramSimilarity
+
+        pks = [ch.pk for ch, _ in items]
+        for ch in (
+            DocumentChunk.objects.filter(pk__in=pks)
+            .annotate(sim=TrigramSimilarity("content", trigram_q))
+            .iterator()
+        ):
+            sim_map[ch.pk] = float(getattr(ch, "sim", 0.0) or 0.0)
+
+    def sort_key(it: tuple[DocumentChunk, float]) -> float:
+        ch, d = it
+        ov = _word_overlap_count(ch.content or "", tokens)
+        sim = sim_map.get(ch.pk, 0.0)
+        # Lower is better: pull down score when overlap/sim is high
+        key = (
+            d
+            - RAG_RERANK_OVERLAP_WEIGHT * min(ov, 30) / 30.0
+            - RAG_LEXICAL_WEIGHT * sim
+        )
+        if stem_query:
+            key += _stem_noise_penalty(ch.source_url, ch.page_title or "")
+        return key
+
+    return sorted(items, key=sort_key)
+
+
+def _cosine_distance_by_pk(
+    pks: list[int], primary_vector: list[float]
+) -> dict[int, float]:
+    """Real cosine distance for metadata (avoids misleading constant 'boost' distances)."""
+    if not pks or not primary_vector:
+        return {}
+    out: dict[int, float] = {}
+    for ch in DocumentChunk.objects.filter(pk__in=pks).annotate(
+        _cd=CosineDistance("embedding", primary_vector)
+    ).iterator():
+        out[ch.pk] = float(ch._cd)
+    return out
+
+
+def search_document_chunks(
+    composed_query: str, raw_user_query: str | None = None
+) -> tuple[str, list[dict], bool, bool]:
+    """
+    Returns (context_text, sources, used_relaxed_fallback, embedding_ok).
+    """
+    composed_query = (composed_query or "").strip()
+    if not composed_query:
+        return "", [], False, True
+
+    variants = _embedding_variants(composed_query, raw_user_query)
+    vectors = embed_texts(variants) if variants else []
+    vectors = [v for v in vectors if v]
+    if not vectors:
+        return "", [], False, False
+
+    has_rows = DocumentChunk.objects.exists()
+    per_pool = max(
+        RAG_VECTOR_CANDIDATE_POOL,
+        RAG_TOP_K + RAG_VECTOR_FILL_EXTRA + 8,
+    )
+    best = _merge_best_distances(vectors, per_pool)
+    if not best:
+        return "", [], False, True
+
+    sorted_pairs = sorted(best.items(), key=lambda x: x[1])[
+        : max(per_pool, RAG_TOP_K + RAG_VECTOR_FILL_EXTRA + 5)
+    ]
+    pk_order = [pk for pk, _ in sorted_pairs]
+    dist_map = dict(sorted_pairs)
+    chunk_map = {
+        c.pk: c for c in DocumentChunk.objects.filter(pk__in=pk_order)
+    }
+    merged_order: list[tuple[DocumentChunk, float]] = []
+    for pk in pk_order:
+        ch = chunk_map.get(pk)
+        if ch is None:
+            continue
+        d = dist_map[pk]
+        merged_order.append((ch, d))
+
+    candidate_slice = merged_order[: RAG_VECTOR_CANDIDATE_POOL]
+    stem_intent = bool(RAG_STEM_OR_ENGINEERING_INTENT_RE.search(composed_query))
+    reranked = _rerank_items(
+        candidate_slice, composed_query, raw_user_query, stem_query=stem_intent
+    )
+
+    thresh_hits = [(ch, d) for ch, d in reranked if d <= RAG_MAX_DISTANCE]
+    used_relaxed = False
+    if len(thresh_hits) >= RAG_TOP_K:
+        vector_block = thresh_hits[:RAG_TOP_K]
+    elif thresh_hits:
+        vector_block = thresh_hits
+    elif RAG_RELAX_ON_EMPTY and has_rows:
+        vector_block = reranked[:RAG_TOP_K]
+        used_relaxed = bool(vector_block)
+    else:
+        vector_block = []
+
+    ranked: list[tuple[DocumentChunk, float]] = []
+    seen_pk: set[int] = set()
+
+    def push_kw(ch: DocumentChunk, nominal: float) -> None:
+        pk = ch.pk
+        if pk not in seen_pk:
+            seen_pk.add(pk)
+            ranked.append((ch, nominal))
+
+    if RAG_KEYWORD_BOOST and has_rows:
+        stem_terms = stem_engineering_boost_terms(composed_query)
+        stem_terms = sorted(stem_terms, key=len, reverse=True)
+        for term in stem_terms:
+            for ch in DocumentChunk.objects.filter(content__icontains=term)[:6]:
+                push_kw(ch, 0.62)
+
+    # Broad "Faculty/Department" icontains matches almost every page — skip when user asked a specific discipline.
+    if RAG_KEYWORD_BOOST and has_rows and not stem_intent:
+        struct_terms = sorted(
+            structured_list_boost_terms(composed_query), key=len, reverse=True
+        )
+        for term in struct_terms:
+            for ch in DocumentChunk.objects.filter(content__icontains=term)[:5]:
+                push_kw(ch, 0.65)
+
+    for ch, d in vector_block:
+        push_kw(ch, float(d))
+
+    # Single-word "computer"/"engineering" icontains poisons retrieval for STEM questions.
+    if RAG_KEYWORD_BOOST and has_rows and not stem_intent:
+        for term in rag_keywords_from_query(composed_query):
+            for ch in DocumentChunk.objects.filter(content__icontains=term)[:4]:
+                push_kw(ch, 0.72)
+
+    primary_vec = vectors[0]
+    ranked_pks = [ch.pk for ch, _ in ranked]
+    real_dist = _cosine_distance_by_pk(ranked_pks, primary_vec)
+
+    def _effective_sort_distance(ch: DocumentChunk, nominal: float) -> float:
+        d = real_dist.get(ch.pk, float(nominal))
+        if stem_intent:
+            d += _stem_noise_penalty(ch.source_url, ch.page_title or "")
+        return d
+
+    ranked.sort(key=lambda it: (_effective_sort_distance(it[0], it[1]), it[0].pk))
+
+    context_parts: list[str] = []
+    sources: list[dict] = []
+    total = 0
+    url_counts: dict[str, int] = {}
+    seen_chunk_ids: set[int] = set()
+
+    def try_add_context_chunk(ch: DocumentChunk, nominal_dist: float) -> None:
+        nonlocal total
+        if total >= RAG_MAX_CHARS:
+            return
+        cid = ch.pk
+        if cid in seen_chunk_ids:
+            return
+        u = ch.source_url
+        if url_counts.get(u, 0) >= RAG_MAX_CHUNKS_PER_URL:
+            return
+        snippet = (ch.content or "")[:RAG_SNIPPET_CHARS]
+        if total + len(snippet) > RAG_MAX_CHARS:
+            return
+        title = ch.page_title or ch.source_url
+        context_parts.append(f"[{title}]\n{snippet}")
+        total += len(snippet)
+        url_counts[u] = url_counts.get(u, 0) + 1
+        seen_chunk_ids.add(cid)
+        display_d = real_dist.get(cid, nominal_dist)
+        sources.append(
+            {
+                "url": ch.source_url,
+                "title": (title or "")[:200],
+                "cosine_distance": round(float(display_d), 4),
+            }
+        )
+
+    for chunk, dist_val in ranked:
+        try_add_context_chunk(chunk, dist_val)
+
+    if total < RAG_MAX_CHARS and RAG_VECTOR_FILL_EXTRA > 0:
+        fill_slice = list(merged_order[RAG_TOP_K : RAG_TOP_K + RAG_VECTOR_FILL_EXTRA])
+        fill_pks = [ch.pk for ch, _ in fill_slice]
+        real_dist.update(_cosine_distance_by_pk(fill_pks, primary_vec))
+        fill_slice.sort(
+            key=lambda it: (_effective_sort_distance(it[0], it[1]), it[0].pk)
+        )
+        for ch, d in fill_slice:
+            try_add_context_chunk(ch, float(d))
+            if total >= RAG_MAX_CHARS:
+                break
+
+    return "\n\n".join(context_parts), sources, used_relaxed, True

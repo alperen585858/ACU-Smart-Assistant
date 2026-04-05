@@ -1,3 +1,5 @@
+# pyright: reportMissingModuleSource=false
+"""Fetch pages from acibadem.edu.tr into core.Page."""
 import re
 import time
 from collections import deque
@@ -14,6 +16,8 @@ from core.models import Page
 SOURCE_LABEL = "acibadem.edu.tr"
 DEFAULT_SEEDS = (
     "https://www.acibadem.edu.tr/en",
+    # Registration contact/transport — often not reached within default depth/page limits from home alone.
+    "https://www.acibadem.edu.tr/en/kayit/iletisim/ulasim",
 )
 ALLOWED_NETLOCS = frozenset(
     {

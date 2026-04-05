@@ -12,7 +12,7 @@ COPY . .
 
 EXPOSE 3000
 
-# Docker Desktop + bind mount için dosya izleme
+# File watching for Docker Desktop + bind mounts
 ENV WATCHPACK_POLLING=true
 
 CMD ["npm", "run", "dev", "--", "--hostname", "0.0.0.0", "--port", "3000"]
