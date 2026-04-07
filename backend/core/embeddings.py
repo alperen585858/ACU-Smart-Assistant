@@ -5,6 +5,7 @@ from sentence_transformers import SentenceTransformer
 
 
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
+_EMBEDDING_LOAD_FAILED = False
 
 
 def chunk_text(text: str, chunk_size: int = 700, chunk_overlap: int = 120) -> list[str]:
@@ -30,8 +31,17 @@ def chunk_text(text: str, chunk_size: int = 700, chunk_overlap: int = 120) -> li
 
 @lru_cache(maxsize=1)
 def get_embedding_model() -> SentenceTransformer:
+    global _EMBEDDING_LOAD_FAILED
+    if _EMBEDDING_LOAD_FAILED:
+        raise RuntimeError("Embedding model is unavailable in this environment.")
     model_name = os.environ.get("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
-    return SentenceTransformer(model_name)
+    try:
+        return SentenceTransformer(model_name)
+    except Exception:
+        # Avoid re-trying expensive model download on every request when
+        # network/proxy prevents access to HuggingFace.
+        _EMBEDDING_LOAD_FAILED = True
+        raise
 
 
 def embed_texts(texts: list[str]) -> list[list[float]]:

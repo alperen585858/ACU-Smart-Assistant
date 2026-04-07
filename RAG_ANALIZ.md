@@ -13,7 +13,7 @@ Bu belge, projedeki RAG hattını uçtan uca inceleyerek **neden “düzgün ça
 | Sorgu | `chat/views.py` | `embed_query` ile sorgu vektörü; `pgvector` üzerinden kosinüs mesafesi; isteğe bağlı anahtar kelime takviyesi. |
 | Üretim | Ollama / Claude | Sistem + (geçmiş) + son kullanıcı mesajında `===CONTEXT===` bloğu. |
 
-**Kritik bağımlılık:** `DocumentChunk.embedding` alanı `pgvector` gerektirir; üretim yolu PostgreSQL + `vector` uzantısı olmadan migration veya sorgular sorun çıkarır (`settings.py`: `POSTGRES_USER` yoksa SQLite kullanılır — aşağıya bakın).
+**Kritik bağımlılık:** `DocumentChunk.embedding` alanı `pgvector` gerektirir; üretim yolu PostgreSQL + `vector` uzantısı olmadan migration veya sorgular sorun çıkarır. Proje PostgreSQL-zorunludur, SQLite desteklenmez.
 
 ---
 
@@ -35,9 +35,9 @@ Oysa RAG tarafında:
 
 **Öneri:** Docker veya `.env` içinde en az **4096** (tercihen donanıma göre 8192) ve geçmiş mesaj sayısını buna göre sınırlamak.
 
-### 2.2 SQLite ile yerel geliştirme: pgvector uyumsuzluğu
+### 2.2 PostgreSQL zorunlulugu ve pgvector uyumlulugu
 
-`config/settings.py`: `POSTGRES_USER` tanımlı değilse veritabanı **SQLite** olur. Migration’lar `CREATE EXTENSION vector` ve `VectorField` kullanır.
+`config/settings.py` sadece PostgreSQL kullanir. Migration’lar `CREATE EXTENSION vector` ve `VectorField` kullandigi icin pgvector kurulu bir PostgreSQL zorunludur.
 
 **Sonuç:** Yerel ortamda PostgreSQL kullanılmadan migration hatası veya vektör sorgularının çalışmaması; RAG fiilen devre dışı veya kurulum takılı kalır.
 

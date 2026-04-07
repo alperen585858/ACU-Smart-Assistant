@@ -18,6 +18,10 @@ DEFAULT_SEEDS = (
     "https://www.acibadem.edu.tr/en",
     # Registration contact/transport — often not reached within default depth/page limits from home alone.
     "https://www.acibadem.edu.tr/en/kayit/iletisim/ulasim",
+    "https://www.acibadem.edu.tr/en/academic/undergraduate-programs/faculty-of-engineering-and-natural-sciences/departments/computer-engineering/message-from-head-of-department",
+    "https://www.acibadem.edu.tr/en/academic/undergraduate-programs/faculty-of-engineering-and-natural-sciences/departments/computer-engineering/about",
+    "https://www.acibadem.edu.tr/en/academic/undergraduate-programs/faculty-of-engineering-and-natural-sciences/departments/computer-engineering/academic-staff",
+    "https://www.acibadem.edu.tr/en/academic/undergraduate-programs/faculty-of-engineering-and-natural-sciences/departments/computer-engineering/commissions",
 )
 ALLOWED_NETLOCS = frozenset(
     {
