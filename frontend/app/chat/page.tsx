@@ -469,26 +469,15 @@ export default function ChatPage() {
 
   return (
     <div className="relative min-h-screen overflow-hidden">
-      <Link
-        href="/"
-        aria-label="Home"
-        className="fixed left-5 top-5 z-30 flex items-center"
-      >
-        <Image
-          src="/logo.svg"
-          alt="ACU"
-          width={120}
-          height={36}
-          className="h-9 w-auto"
-          unoptimized
-        />
-      </Link>
-
       <div
         className="pointer-events-none fixed inset-0 overflow-hidden"
         aria-hidden
       >
-        <div className="absolute inset-0 bg-gradient-to-br from-[#0b2e3b] via-[#0a1628] to-[#162a3e]" />
+        <div
+          className="absolute inset-0 bg-cover bg-center bg-no-repeat"
+          style={{ backgroundImage: "url('/kampus.png.webp')" }}
+        />
+        <div className="absolute inset-0 bg-[#081626]/45" />
         <div className="absolute -top-32 -right-32 h-96 w-96 rounded-full bg-cyan-500/10 blur-3xl animate-float" />
         <div className="absolute -bottom-32 -left-32 h-96 w-96 rounded-full bg-blue-500/10 blur-3xl animate-float [animation-delay:3s]" />
       </div>
@@ -496,6 +485,19 @@ export default function ChatPage() {
       <div className="relative z-10 flex min-h-screen items-center justify-center px-4 py-10 pt-20 sm:pt-10">
         <div className="flex h-[calc(100dvh-5rem)] w-full max-w-4xl flex-col overflow-hidden rounded-3xl border border-white/30 bg-white/75 shadow-[0_20px_60px_rgba(0,0,0,0.35)] backdrop-blur-xl sm:h-[85vh] sm:min-h-[560px]">
           <div className="flex shrink-0 items-center gap-2 border-b border-white/40 px-3 py-3 sm:gap-3 sm:px-6">
+            <Link href="/" aria-label="Home" className="flex items-center pr-1">
+              <Image
+                src="/logo.svg"
+                alt="ACU"
+                width={110}
+                height={34}
+                className="h-8 w-auto"
+                unoptimized
+              />
+            </Link>
+
+            <div className="h-6 w-px shrink-0 bg-[#0b2e3b]/20" />
+
             <button
               type="button"
               onClick={() => setHistoryOpen((v) => !v)}
@@ -534,9 +536,6 @@ export default function ChatPage() {
               </p>
             </div>
 
-            <span className="hidden shrink-0 text-xs font-medium text-[#0b2e3b]/55 sm:block">
-              Saved on the server
-            </span>
           </div>
 
           <div className="flex min-h-0 flex-1 overflow-hidden">

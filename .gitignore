@@ -58,8 +58,6 @@ cover/
 # Django stuff:
 *.log
 local_settings.py
-db.sqlite3
-db.sqlite3-journal
 
 # Flask stuff:
 instance/
@@ -197,6 +195,10 @@ cython_debug/
 # OS / IDE
 .DS_Store
 .idea/
+.next/
+node_modules/
+frontend/.next/
+frontend/node_modules/
 
 # Cursor
 #  Cursor is an AI-powered code editor. `.cursorignore` specifies files/directories to

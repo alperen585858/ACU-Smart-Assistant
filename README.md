@@ -9,6 +9,39 @@ Django API, Next.js chat UI, and RAG over crawled university pages using **Postg
 - PostgreSQL **15+** with the **pgvector** extension (Docker image `pgvector/pgvector:pg15` or a local install with `CREATE EXTENSION vector`)
 - Optional: [Ollama](https://ollama.com/) for local LLM inference
 
+## Gelistirme Ortami Kurulumu
+
+Python virtual environment standardi olarak `backend/.venv` kullanin.
+
+1. Create and activate virtual environment:
+
+   ```bash
+   cd backend
+   python3 -m venv .venv
+   source .venv/bin/activate
+   ```
+
+2. Install backend dependencies:
+
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. Install frontend dependencies:
+
+   ```bash
+   cd ../frontend
+   npm install
+   ```
+
+4. Return to backend for migrations and API run:
+
+   ```bash
+   cd ../backend
+   python manage.py migrate
+   python manage.py runserver
+   ```
+
 ## Quick start
 
 1. Clone the repo and enter the project directory.
@@ -80,7 +113,7 @@ Set `POSTGRES_HOST=localhost` and `POSTGRES_PORT=5432` (or your local port) in `
 
 Use this when you run Django and Next.js on the host and only use local services (no `docker compose`).
 
-1. **PostgreSQL + pgvector** — Postgres must have the `vector` extension (`CREATE EXTENSION vector;` on your database). Without `POSTGRES_USER` in `.env`, Django falls back to SQLite, which does **not** support RAG embeddings.
+1. **PostgreSQL + pgvector** — Postgres must have the `vector` extension (`CREATE EXTENSION vector;` on your database). This project is PostgreSQL-only; SQLite is **not supported**.
 
 2. **Env file** — From the **project root** (`Project/`), run `cp .env.example .env`. Django loads **`Project/.env`** (not `backend/.env`). Match `POSTGRES_*` to your local DB. For Ollama on the same machine, set:
    - `OLLAMA_BASE_URL=http://127.0.0.1:11434`
@@ -105,7 +138,6 @@ See [`.env.example`](.env.example) for all options: DB credentials, Ollama/Claud
 - `.env` (secrets and machine-specific ports)
 - Python `venv` / `.venv`
 - `frontend/node_modules`, `frontend/.next`
-- `backend/db.sqlite3` (only used if Postgres env vars are unset)
 
 ## License
 
