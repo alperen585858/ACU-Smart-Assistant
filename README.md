@@ -71,6 +71,8 @@ Python virtual environment standardi olarak `backend/.venv` kullanin.
    python manage.py refresh_rag --max-pages 60 --depth 2
    ```
 
+   Operational details, manual crawl → embed order, and **`refresh_rag` data-deletion defaults**: see [RAG_VERI_PIPELINE_REHBERI.md](RAG_VERI_PIPELINE_REHBERI.md).
+
    Or inspect index stats:
 
    ```bash
@@ -123,7 +125,7 @@ Use this when you run Django and Next.js on the host and only use local services
 
 4. **Backend** — `cd backend && pip install -r requirements.txt && python manage.py migrate && python manage.py runserver`
 
-5. **RAG index (first time or after crawl changes)** — `cd backend && python manage.py refresh_rag --max-pages 60 --depth 2` (or `rag_stats` to inspect).
+5. **RAG index (first time or after crawl changes)** — `cd backend && python manage.py refresh_rag --max-pages 60 --depth 2` (or `rag_stats` to inspect). See [RAG_VERI_PIPELINE_REHBERI.md](RAG_VERI_PIPELINE_REHBERI.md) before running `refresh_rag` without `--keep-existing` (it clears existing pages/chunks by default).
 
 6. **Frontend** — Ensure `frontend/.env.local` contains `NEXT_PUBLIC_API_URL=http://localhost:8000`, then `cd frontend && npm install && npm run dev`.
 
