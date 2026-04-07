@@ -1,9 +1,13 @@
 import json
+import logging
 import os
 import re
 import socket
+import time
 import urllib.error
 import urllib.request
+
+logger = logging.getLogger("chat.llm")
 
 LLM_BACKEND = os.environ.get("LLM_BACKEND", "ollama")
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
@@ -133,10 +137,22 @@ def _call_ollama(ollama_messages: list) -> tuple[str | None, str | None]:
 
 
 def call_llm(messages: list) -> tuple[str | None, str | None]:
-    if LLM_BACKEND == "claude" and ANTHROPIC_API_KEY:
+    backend = "claude" if (LLM_BACKEND == "claude" and ANTHROPIC_API_KEY) else "ollama"
+    logger.info("LLM call: backend=%s, messages=%d", backend, len(messages))
+    start = time.time()
+
+    if backend == "claude":
         reply, err = _call_claude(messages)
     else:
         reply, err = _call_ollama(messages)
-    if err or not reply:
+
+    elapsed = round(time.time() - start, 2)
+    if err:
+        logger.warning("LLM error: backend=%s, elapsed=%.2fs, error=%s", backend, elapsed, err[:200])
         return reply, err
+    if not reply:
+        logger.warning("LLM empty response: backend=%s, elapsed=%.2fs", backend, elapsed)
+        return reply, err
+
+    logger.info("LLM reply: backend=%s, elapsed=%.2fs, chars=%d", backend, elapsed, len(reply))
     return _sanitize_assistant_reply(reply), None
