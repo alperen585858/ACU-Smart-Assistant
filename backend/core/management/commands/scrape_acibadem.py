@@ -1,6 +1,5 @@
 # pyright: reportMissingModuleSource=false
 """Fetch pages from acibadem.edu.tr into core.Page."""
-import re
 import time
 from collections import deque
 from urllib.parse import urldefrag, urljoin, urlparse
@@ -11,11 +10,15 @@ import requests
 from bs4 import BeautifulSoup
 from django.core.management.base import BaseCommand
 
+from core.html_extract import extract_title_and_text
 from core.models import Page
 
 SOURCE_LABEL = "acibadem.edu.tr"
 DEFAULT_SEEDS = (
     "https://www.acibadem.edu.tr/en",
+    "https://www.acibadem.edu.tr/en/node",
+    "https://www.acibadem.edu.tr/en/news",
+    "https://www.acibadem.edu.tr/en/announcements",
     # Registration contact/transport — often not reached within default depth/page limits from home alone.
     "https://www.acibadem.edu.tr/en/kayit/iletisim/ulasim",
     "https://www.acibadem.edu.tr/en/academic/undergraduate-programs/faculty-of-engineering-and-natural-sciences/departments/computer-engineering/message-from-head-of-department",
@@ -32,7 +35,6 @@ USER_AGENT = (
     "ACU-Smart-Assistant/0.1 (+university project; respectful crawl; contact: student)"
 )
 REQUEST_TIMEOUT = 25
-MAX_CONTENT_CHARS = 5000
 
 
 def is_english_path(path: str) -> bool:
@@ -70,25 +72,6 @@ def same_site(url: str) -> bool:
         return host in ALLOWED_NETLOCS
     except Exception:
         return False
-
-
-def extract_title_and_text(html: str) -> tuple[str, str]:
-    soup = BeautifulSoup(html, "lxml")
-    raw_title = ""
-    if soup.title and soup.title.string:
-        raw_title = soup.title.string.strip()
-    for tag in soup(["script", "style", "noscript", "svg"]):
-        tag.decompose()
-    root = soup.find("main") or soup.find("article") or soup.body
-    if root is None:
-        text = ""
-    else:
-        text = root.get_text(separator="\n", strip=True)
-    text = re.sub(r"\n{3,}", "\n\n", text).strip()
-    # Keep DB rows (and later LLM context) bounded.
-    text = text[:MAX_CONTENT_CHARS]
-    title = (raw_title or "")[:500]
-    return title, text
 
 
 def load_robot_parser(base: str) -> RobotFileParser | None:

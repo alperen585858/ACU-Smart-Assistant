@@ -4,8 +4,29 @@ import time
 
 from django.db import connection
 from django.http import JsonResponse
+from drf_spectacular.utils import OpenApiResponse, extend_schema, inline_serializer
+from rest_framework import serializers
+from rest_framework.decorators import api_view
 
 
+@extend_schema(
+    summary="Health check",
+    description="Returns service health status including database connectivity and latency.",
+    responses={
+        200: OpenApiResponse(
+            description="Service is healthy",
+            response=inline_serializer(
+                name="HealthResponse",
+                fields={
+                    "status": serializers.CharField(),
+                    "checks": serializers.DictField(),
+                },
+            ),
+        ),
+        503: OpenApiResponse(description="Service is unhealthy"),
+    },
+)
+@api_view(["GET"])
 def health_check(request):
     """Returns service health status including DB connectivity."""
     checks = {}
