@@ -85,20 +85,24 @@ export default function ChatPage() {
   const refreshSessionList = useCallback(async () => {
     const cid = getOrCreateClientId();
     if (!cid) return;
-    const r = await fetch(
-      `${apiBase}/api/chat/sessions/?client_id=${encodeURIComponent(cid)}`
-    );
-    if (!r.ok) return;
-    const data = (await r.json()) as {
-      sessions: Array<{ id: string; title: string; updated_at: string }>;
-    };
-    setSessionList(
-      data.sessions.map((s) => ({
-        id: s.id,
-        title: s.title,
-        updatedAt: new Date(s.updated_at).getTime(),
-      }))
-    );
+    try {
+      const r = await fetch(
+        `${apiBase}/api/chat/sessions/?client_id=${encodeURIComponent(cid)}`
+      );
+      if (!r.ok) return;
+      const data = (await r.json()) as {
+        sessions: Array<{ id: string; title: string; updated_at: string }>;
+      };
+      setSessionList(
+        data.sessions.map((s) => ({
+          id: s.id,
+          title: s.title,
+          updatedAt: new Date(s.updated_at).getTime(),
+        }))
+      );
+    } catch {
+      // Backend unreachable – silently ignore
+    }
   }, [apiBase]);
 
   const loadMessages = useCallback(
@@ -142,38 +146,46 @@ export default function ChatPage() {
       if (cancelled) return;
       setClientId(cid);
 
-      const r = await fetch(
-        `${apiBase}/api/chat/sessions/?client_id=${encodeURIComponent(cid)}`
-      );
-      if (cancelled) return;
-      if (r.ok) {
-        const data = (await r.json()) as {
-          sessions: Array<{ id: string; title: string; updated_at: string }>;
-        };
-        const list = data.sessions.map((s) => ({
-          id: s.id,
-          title: s.title,
-          updatedAt: new Date(s.updated_at).getTime(),
-        }));
-        setSessionList(list);
+      try {
+        const r = await fetch(
+          `${apiBase}/api/chat/sessions/?client_id=${encodeURIComponent(cid)}`
+        );
+        if (cancelled) return;
+        if (r.ok) {
+          const data = (await r.json()) as {
+            sessions: Array<{ id: string; title: string; updated_at: string }>;
+          };
+          const list = data.sessions.map((s) => ({
+            id: s.id,
+            title: s.title,
+            updatedAt: new Date(s.updated_at).getTime(),
+          }));
+          setSessionList(list);
 
-        const last = localStorage.getItem(LAST_SESSION_KEY);
-        if (last && list.some((s) => s.id === last)) {
-          setActiveId(last);
-          const okLoad = await loadMessages(last);
-          if (!okLoad) {
-            setMessages([]);
+          const last = localStorage.getItem(LAST_SESSION_KEY);
+          if (last && list.some((s) => s.id === last)) {
+            setActiveId(last);
+            const okLoad = await loadMessages(last);
+            if (!okLoad) {
+              setMessages([]);
+              setActiveId(null);
+              localStorage.removeItem(LAST_SESSION_KEY);
+            }
+          } else {
             setActiveId(null);
-            localStorage.removeItem(LAST_SESSION_KEY);
+            setMessages([]);
           }
         } else {
+          setSessionList([]);
           setActiveId(null);
           setMessages([]);
         }
-      } else {
-        setSessionList([]);
-        setActiveId(null);
-        setMessages([]);
+      } catch {
+        if (!cancelled) {
+          setSessionList([]);
+          setActiveId(null);
+          setMessages([]);
+        }
       }
       if (!cancelled) setHydrated(true);
     })();
