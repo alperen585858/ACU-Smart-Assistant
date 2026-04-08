@@ -144,3 +144,5 @@ def _chat_with_db(body: dict, client_uuid: uuid.UUID) -> JsonResponse:
             "rag": rag_meta,
         }
     )
+
+

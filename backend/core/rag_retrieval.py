@@ -5,10 +5,14 @@ rerank (word overlap + optional pg_trgm), then char-budget fill.
 
 from __future__ import annotations
 
+import logging
 import re
+import time
 
 from django.db import connection
 from pgvector.django import CosineDistance
+
+logger = logging.getLogger("core.rag")
 
 from core.embeddings import embed_texts
 from core.models import DocumentChunk, Page
@@ -358,16 +362,17 @@ def search_document_chunks(
     """
     Returns (context_text, sources, used_relaxed_fallback, embedding_ok).
     """
+    t0 = time.time()
     composed_query = (composed_query or "").strip()
     if not composed_query:
         return "", [], False, True
 
     variants = _embedding_variants(composed_query, raw_user_query)
     try:
+        t_emb = time.time()
         vectors = embed_texts(variants) if variants else []
+        logger.info("RAG embed: %.2fs (%d variants)", time.time() - t_emb, len(variants))
     except Exception:
-        # Embeddings unavailable (proxy/offline/model download issue):
-        # fall back to token-overlap retrieval from local DB content.
         context, sources, relaxed, emb_ok = _lexical_fallback_from_chunks(
             composed_query, raw_user_query
         )
@@ -383,7 +388,10 @@ def search_document_chunks(
         RAG_VECTOR_CANDIDATE_POOL,
         RAG_TOP_K + RAG_VECTOR_FILL_EXTRA + 8,
     )
+
+    t_vec = time.time()
     best = _merge_best_distances(vectors, per_pool)
+    logger.info("RAG vector search: %.2fs (pool=%d)", time.time() - t_vec, per_pool)
     if not best:
         return "", [], False, True
 
@@ -405,9 +413,12 @@ def search_document_chunks(
 
     candidate_slice = merged_order[: RAG_VECTOR_CANDIDATE_POOL]
     stem_intent = bool(RAG_STEM_OR_ENGINEERING_INTENT_RE.search(composed_query))
+
+    t_rerank = time.time()
     reranked = _rerank_items(
         candidate_slice, composed_query, raw_user_query, stem_query=stem_intent
     )
+    logger.info("RAG rerank: %.2fs (%d candidates)", time.time() - t_rerank, len(candidate_slice))
 
     thresh_hits = [(ch, d) for ch, d in reranked if d <= RAG_MAX_DISTANCE]
     used_relaxed = False
@@ -430,6 +441,7 @@ def search_document_chunks(
             seen_pk.add(pk)
             ranked.append((ch, nominal))
 
+    t_kw = time.time()
     if RAG_KEYWORD_BOOST and has_rows:
         stem_terms = stem_engineering_boost_terms(composed_query)
         stem_terms = sorted(stem_terms, key=len, reverse=True)
@@ -437,7 +449,6 @@ def search_document_chunks(
             for ch in DocumentChunk.objects.filter(content__icontains=term)[:6]:
                 push_kw(ch, 0.62)
 
-    # Broad "Faculty/Department" icontains matches almost every page — skip when user asked a specific discipline.
     if RAG_KEYWORD_BOOST and has_rows and not stem_intent:
         struct_terms = sorted(
             structured_list_boost_terms(composed_query), key=len, reverse=True
@@ -449,15 +460,18 @@ def search_document_chunks(
     for ch, d in vector_block:
         push_kw(ch, float(d))
 
-    # Single-word "computer"/"engineering" icontains poisons retrieval for STEM questions.
     if RAG_KEYWORD_BOOST and has_rows and not stem_intent:
         for term in rag_keywords_from_query(composed_query):
             for ch in DocumentChunk.objects.filter(content__icontains=term)[:4]:
                 push_kw(ch, 0.72)
+    logger.info("RAG keyword boost: %.2fs", time.time() - t_kw)
 
     primary_vec = vectors[0]
     ranked_pks = [ch.pk for ch, _ in ranked]
+
+    t_dist = time.time()
     real_dist = _cosine_distance_by_pk(ranked_pks, primary_vec)
+    logger.info("RAG cosine re-dist: %.2fs (%d pks)", time.time() - t_dist, len(ranked_pks))
 
     def _effective_sort_distance(ch: DocumentChunk, nominal: float) -> float:
         d = real_dist.get(ch.pk, float(nominal))
@@ -517,4 +531,5 @@ def search_document_chunks(
             if total >= RAG_MAX_CHARS:
                 break
 
+    logger.info("RAG total: %.2fs, chunks=%d, chars=%d", time.time() - t0, len(sources), total)
     return "\n\n".join(context_parts), sources, used_relaxed, True
