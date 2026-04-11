@@ -1,3 +1,7 @@
+# CPU-only PyTorch — default pip CUDA/NVIDIA wheels are multi-GB and often fill small EC2 disks.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.5.1+cpu
+
 asgiref==3.11.1
 beautifulsoup4==4.12.3
 Django==6.0.3

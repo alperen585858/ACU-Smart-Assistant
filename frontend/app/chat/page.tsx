@@ -48,11 +48,28 @@ const LAST_SESSION_KEY = "acu-chat-last-session-id";
 /** Stable key for the “new chat” view (not yet a server session id) */
 const DRAFT_SESSION_KEY = "__draft__";
 
+/** RFC4122 v4; works on http://IP where `crypto.randomUUID` is missing (non-secure context). */
+function newUuid(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  const bytes = new Uint8Array(16);
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
+  }
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const h = [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+}
+
 function getOrCreateClientId(): string {
   if (typeof window === "undefined") return "";
   let id = localStorage.getItem(CLIENT_ID_KEY);
   if (!id) {
-    id = crypto.randomUUID();
+    id = newUuid();
     localStorage.setItem(CLIENT_ID_KEY, id);
   }
   return id;
@@ -141,6 +158,19 @@ export default function ChatPage() {
 
   useEffect(() => {
     let cancelled = false;
+    let backupTimer: number | null = window.setTimeout(
+      () => {
+        if (!cancelled) setHydrated(true);
+      },
+      20_000
+    );
+    const clearBackup = () => {
+      if (backupTimer != null) {
+        clearTimeout(backupTimer);
+        backupTimer = null;
+      }
+    };
+
     (async () => {
       const cid = getOrCreateClientId();
       if (cancelled) return;
@@ -148,7 +178,8 @@ export default function ChatPage() {
 
       try {
         const r = await fetch(
-          `${apiBase}/api/chat/sessions/?client_id=${encodeURIComponent(cid)}`
+          `${apiBase}/api/chat/sessions/?client_id=${encodeURIComponent(cid)}`,
+          { signal: AbortSignal.timeout(18_000) }
         );
         if (cancelled) return;
         if (r.ok) {
@@ -187,10 +218,14 @@ export default function ChatPage() {
           setMessages([]);
         }
       }
-      if (!cancelled) setHydrated(true);
+      if (!cancelled) {
+        clearBackup();
+        setHydrated(true);
+      }
     })();
     return () => {
       cancelled = true;
+      clearBackup();
     };
   }, [apiBase, loadMessages]);
 
@@ -309,7 +344,7 @@ export default function ChatPage() {
     if (!clientId) setClientId(cid);
 
     const userMessage: Message = {
-      id: crypto.randomUUID(),
+      id: newUuid(),
       role: "user",
       content: trimmed,
       timestamp: new Date(),
@@ -401,7 +436,7 @@ export default function ChatPage() {
         setMessages((prev) => [
           ...prev,
           {
-            id: crypto.randomUUID(),
+            id: newUuid(),
             role: "assistant",
             content: replyText,
             timestamp: new Date(),
@@ -423,7 +458,7 @@ export default function ChatPage() {
           setMessages((prev) => [
             ...prev,
             {
-              id: crypto.randomUUID(),
+              id: newUuid(),
               role: "assistant",
               content: replyText,
               timestamp: new Date(),
@@ -456,7 +491,7 @@ export default function ChatPage() {
       }
     } else if (stillOnSentView()) {
       const assistantMessage: Message = {
-        id: crypto.randomUUID(),
+        id: newUuid(),
         role: "assistant",
         content: replyText,
         timestamp: new Date(),
