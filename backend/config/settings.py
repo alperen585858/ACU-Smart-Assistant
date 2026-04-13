@@ -29,9 +29,21 @@ SECRET_KEY = os.environ.get(
 )
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.environ.get("DEBUG", "True").lower() in ("1", "true", "yes")
 
-ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
+ALLOWED_HOSTS = [
+    h.strip()
+    for h in os.environ.get("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
+    if h.strip()
+]
+
+_wh_flag = os.environ.get("DJANGO_WHITENOISE", "auto").lower()
+if _wh_flag == "auto":
+    USE_WHITENOISE = not DEBUG
+elif _wh_flag in ("1", "true", "yes"):
+    USE_WHITENOISE = True
+else:
+    USE_WHITENOISE = False
 
 
 # Application definition
@@ -64,15 +76,21 @@ SPECTACULAR_SETTINGS = {
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
-    'corsheaders.middleware.CorsMiddleware',
-    'django.contrib.sessions.middleware.SessionMiddleware',
-    'django.middleware.common.CommonMiddleware',
-    'django.middleware.csrf.CsrfViewMiddleware',
-    'django.contrib.auth.middleware.AuthenticationMiddleware',
-    'django.contrib.messages.middleware.MessageMiddleware',
-    'django.middleware.clickjacking.XFrameOptionsMiddleware',
-    'chat.middleware.RateLimitMiddleware',
 ]
+if USE_WHITENOISE:
+    MIDDLEWARE.append('whitenoise.middleware.WhiteNoiseMiddleware')
+MIDDLEWARE.extend(
+    [
+        'corsheaders.middleware.CorsMiddleware',
+        'django.contrib.sessions.middleware.SessionMiddleware',
+        'django.middleware.common.CommonMiddleware',
+        'django.middleware.csrf.CsrfViewMiddleware',
+        'django.contrib.auth.middleware.AuthenticationMiddleware',
+        'django.contrib.messages.middleware.MessageMiddleware',
+        'django.middleware.clickjacking.XFrameOptionsMiddleware',
+        'chat.middleware.RateLimitMiddleware',
+    ]
+)
 
 # Rate limiting
 RATE_LIMIT_REQUESTS = int(os.environ.get("RATE_LIMIT_REQUESTS", "30"))
@@ -147,7 +165,18 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
-STATIC_URL = 'static/'
+STATIC_URL = "static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
+
+if USE_WHITENOISE:
+    STORAGES = {
+        "default": {
+            "BACKEND": "django.core.files.storage.FileSystemStorage",
+        },
+        "staticfiles": {
+            "BACKEND": "whitenoise.storage.CompressedStaticFilesStorage",
+        },
+    }
 
 # Logging
 LOGGING = {
@@ -195,3 +224,19 @@ CSRF_TRUSTED_ORIGINS = [
     "http://localhost:3001",
     "http://127.0.0.1:3001",
 ]
+CSRF_TRUSTED_ORIGINS.extend(
+    [
+        x.strip()
+        for x in os.environ.get("CSRF_TRUSTED_ORIGINS_EXTRA", "").split(",")
+        if x.strip()
+    ]
+)
+
+# Canlı ortam: farklı subdomain veya ayrı frontend domain (ör. https://app.site.com)
+CORS_ALLOWED_ORIGINS.extend(
+    [
+        x.strip()
+        for x in os.environ.get("CORS_ALLOWED_ORIGINS_EXTRA", "").split(",")
+        if x.strip()
+    ]
+)
