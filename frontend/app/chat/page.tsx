@@ -88,6 +88,8 @@ export default function ChatPage() {
   const [typingElapsedSec, setTypingElapsedSec] = useState(0);
   const [historyOpen, setHistoryOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesScrollRef = useRef<HTMLElement>(null);
+  const shouldAutoScrollRef = useRef(true);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const requestStartRef = useRef<number | null>(null);
   const activeIdRef = useRef<string | null>(null);
@@ -248,13 +250,33 @@ export default function ChatPage() {
     [sessionList]
   );
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  const updateAutoScrollState = useCallback(() => {
+    const scroller = messagesScrollRef.current;
+    if (!scroller) return;
+    const distanceFromBottom =
+      scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+    // Consider "at bottom" within a small threshold to avoid sticky jitter.
+    shouldAutoScrollRef.current = distanceFromBottom < 64;
+  }, []);
+
+  const scrollToBottom = (behavior: ScrollBehavior = "smooth") => {
+    messagesEndRef.current?.scrollIntoView({ behavior });
   };
 
   useEffect(() => {
-    scrollToBottom();
+    if (!shouldAutoScrollRef.current) return;
+    // While waiting/typing, avoid smooth-scroll fighting with manual scroll.
+    scrollToBottom(typingForThisView ? "auto" : "smooth");
   }, [messages, activeId, typingForThisView, typingElapsedSec]);
+
+  useEffect(() => {
+    // New conversation/view switch should start pinned to bottom.
+    shouldAutoScrollRef.current = true;
+    requestAnimationFrame(() => {
+      scrollToBottom("auto");
+      updateAutoScrollState();
+    });
+  }, [activeId, updateAutoScrollState]);
 
   useEffect(() => {
     if (!typingForThisView) {
@@ -357,16 +379,9 @@ export default function ChatPage() {
     setLoadingSessionKey(requestOwnerKey);
     setIsLoading(true);
 
-    const chatTimeoutMs = Number(
-      process.env.NEXT_PUBLIC_CHAT_TIMEOUT_MS ?? "200000"
-    );
     const controller = new AbortController();
     activeChatAbortRef.current = controller;
     abortReasonRef.current = null;
-    const timeoutId = window.setTimeout(() => {
-      abortReasonRef.current = "timeout";
-      controller.abort();
-    }, chatTimeoutMs);
 
     const body: Record<string, string> = {
       client_id: cid,
@@ -413,14 +428,13 @@ export default function ChatPage() {
           userCancelled = true;
           replyText = "Response generation was stopped.";
         } else {
-          replyText = `No response within ${Math.round(chatTimeoutMs / 1000)} seconds.`;
+          replyText = "Request was aborted before completion.";
         }
       } else {
         replyText =
           "Could not connect. Check NEXT_PUBLIC_API_URL and that the backend is running.";
       }
     } finally {
-      window.clearTimeout(timeoutId);
       activeChatAbortRef.current = null;
       abortReasonRef.current = null;
     }
@@ -671,7 +685,11 @@ export default function ChatPage() {
             </div>
 
             <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-              <main className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-8">
+              <main
+                ref={messagesScrollRef}
+                onScroll={updateAutoScrollState}
+                className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-8"
+              >
                 {messages.length === 0 ? (
                   <div className="flex h-full min-h-[42vh] flex-col items-center justify-center gap-5 text-center">
                     <div className="flex h-20 w-20 items-center justify-center rounded-3xl bg-gradient-to-br from-cyan-500/20 to-blue-500/15 ring-1 ring-white/40">
@@ -891,7 +909,7 @@ export default function ChatPage() {
                       }}
                       placeholder="Type your message…"
                       rows={1}
-                      className="w-full resize-none rounded-2xl border border-white/50 bg-white/70 px-4 py-3.5 pr-12 text-[15px] text-[#0b2e3b] placeholder:text-[#0b2e3b]/40 outline-none transition focus:border-cyan-300/60 focus:ring-2 focus:ring-cyan-300/30"
+                      className="chat-input w-full resize-none rounded-2xl border border-white/50 bg-white/70 px-4 py-3.5 pr-12 text-[15px] text-[#0b2e3b] placeholder:text-[#0b2e3b]/40 outline-none transition focus:border-cyan-300/60 focus:ring-2 focus:ring-cyan-300/30"
                       disabled={typingForThisView}
                     />
 
@@ -901,7 +919,7 @@ export default function ChatPage() {
                         onClick={stopGeneration}
                         title="Stop"
                         aria-label="Stop generating response"
-                        className="absolute bottom-2.5 right-2.5 flex h-9 w-9 items-center justify-center rounded-lg border border-[#0b2e3b]/20 bg-[#0b2e3b] text-white shadow-lg transition hover:bg-[#0a2530] focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/80"
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 flex h-9 w-9 items-center justify-center rounded-lg border border-[#0b2e3b]/20 bg-[#0b2e3b] text-white shadow-lg transition hover:bg-[#0a2530] focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/80"
                       >
                         <svg
                           className="h-3.5 w-3.5"
@@ -923,7 +941,7 @@ export default function ChatPage() {
                       <button
                         type="submit"
                         disabled={!input.trim()}
-                        className="absolute bottom-2.5 right-2.5 flex h-9 w-9 items-center justify-center rounded-xl bg-cyan-600 text-white shadow-lg shadow-cyan-600/20 transition hover:bg-cyan-500 disabled:pointer-events-none disabled:opacity-40"
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 flex h-9 w-9 items-center justify-center rounded-xl bg-cyan-600 text-white shadow-lg shadow-cyan-600/20 transition hover:bg-cyan-500 disabled:pointer-events-none disabled:opacity-40"
                         aria-label="Send"
                       >
                         <svg
