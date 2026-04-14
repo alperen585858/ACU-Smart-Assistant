@@ -77,6 +77,8 @@ services:
       OLLAMA_NUM_PREDICT: ${OLLAMA_NUM_PREDICT:-384}
       OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-8192}
       OLLAMA_HTTP_TIMEOUT: ${OLLAMA_HTTP_TIMEOUT:-120}
+      DEBUG: ${DEBUG:-true}
+      LLM_BACKEND: ${LLM_BACKEND:-ollama}
     ports:
       - "${BACKEND_HOST_PORT:-8000}:8000"
     volumes:
