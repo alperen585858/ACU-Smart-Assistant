@@ -7,7 +7,7 @@ def _env_bool(key: str, default: str = "true") -> bool:
     return os.environ.get(key, default).lower() in ("1", "true", "yes")
 
 
-RAG_MAX_CHARS = max(800, int(os.environ.get("RAG_MAX_CHARS", "4000")))
+RAG_MAX_CHARS = max(800, int(os.environ.get("RAG_MAX_CHARS", "2000")))
 RAG_TOP_K = int(os.environ.get("RAG_TOP_K", "12"))
 RAG_VECTOR_FILL_EXTRA = max(0, int(os.environ.get("RAG_VECTOR_FILL_EXTRA", "6")))
 # Cap chunks per URL in one prompt (lower = less duplicate pages eating the char budget).
@@ -15,7 +15,10 @@ RAG_MAX_CHUNKS_PER_URL = max(1, int(os.environ.get("RAG_MAX_CHUNKS_PER_URL", "2"
 RAG_MAX_DISTANCE = float(os.environ.get("RAG_MAX_DISTANCE", "0.62"))
 RAG_RELAX_ON_EMPTY = _env_bool("RAG_RELAX_ON_EMPTY", "true")
 RAG_KEYWORD_BOOST = _env_bool("RAG_KEYWORD_BOOST", "true")
-RAG_SNIPPET_CHARS = max(400, int(os.environ.get("RAG_SNIPPET_CHARS", "1100")))
+RAG_SNIPPET_CHARS = min(
+    max(400, int(os.environ.get("RAG_SNIPPET_CHARS", "1100"))),
+    RAG_MAX_CHARS,
+)
 
 # Recall-oriented (multi-embed, wide pool, rerank, optional lexical on Postgres)
 RAG_MULTI_EMBED = _env_bool("RAG_MULTI_EMBED", "false")

@@ -94,6 +94,9 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     if cache_hits:
         logger.debug("Embedding cache: %d hits, %d misses", cache_hits, len(to_encode))
 
+    failed = sum(1 for r in results if r is None)
+    if failed:
+        logger.warning("embed_texts: %d/%d texts failed to embed", failed, len(texts))
     return results  # type: ignore[return-value]
 
 

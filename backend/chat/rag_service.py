@@ -153,6 +153,7 @@ def compose_rag_search_query(current_message: str, prior_user_messages: list[str
         re.IGNORECASE,
     ):
         merged = f"{merged}\nAcıbadem Mehmet Ali Aydınlar University (ACU)"
+    # Apply at most one intent-specific keyword boost to avoid diluting embeddings.
     if re.search(
         r"adres|address|konum|location|postal|tam\s*adres|kamp[uü]s|campus|"
         r"\bnerede\b|where\s+is|iletişim|contact\b|ulaşım|how\s+to\s+get",
@@ -160,15 +161,15 @@ def compose_rag_search_query(current_message: str, prior_user_messages: list[str
         re.IGNORECASE,
     ):
         merged = f"{merged}\npostal address campus location contact Istanbul Kerem Aydinlar"
-    if RAG_DEPT_OR_FACULTY_INTENT_RE.search(merged):
+    elif RAG_STEM_OR_ENGINEERING_INTENT_RE.search(cur):
         merged = (
-            f"{merged}\nfaculty school department departments Fakülte Tıp Mühendislik "
-            "Sağlık Bilimleri programs schools list"
-        )
-    if RAG_STEM_OR_ENGINEERING_INTENT_RE.search(merged):
-        merged = (
-            f"{merged}\nBilgisayar Mühendisliği Computer Engineering undergraduate "
+            f"{merged}\nComputer Engineering undergraduate "
             "faculty engineering program degree"
+        )
+    elif RAG_DEPT_OR_FACULTY_INTENT_RE.search(cur):
+        merged = (
+            f"{merged}\nfaculty school department Fakülte "
+            "programs schools list"
         )
     return merged
 
@@ -216,7 +217,6 @@ def _wrap_user_with_rag_context(context: str, user_plain: str) -> str:
 
 
 def _attach_llm_visibility_meta(meta: dict, user_llm: str, context_char_count: int) -> dict:
-    meta["indexed_chunks_in_db"] = DocumentChunk.objects.count()
     meta["context_chars_sent"] = context_char_count
     meta["llm_user_turn_chars"] = len(user_llm)
     meta["context_block_in_llm"] = bool(context_char_count > 0 and "===CONTEXT===" in user_llm)
