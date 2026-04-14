@@ -787,7 +787,11 @@ export default function ChatPage() {
                                     {msg.rag.sources.map((s, i) => (
                                       <li key={`${s.url}-${i}`}>
                                         <a
-                                          href={s.url}
+                                          href={
+                                            s.url && /^https?:\/\//i.test(s.url)
+                                              ? s.url
+                                              : "#"
+                                          }
                                           target="_blank"
                                           rel="noopener noreferrer"
                                           className="font-medium text-cyan-700 underline decoration-cyan-700/30 underline-offset-2 hover:text-cyan-600"
