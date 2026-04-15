@@ -4,11 +4,8 @@ These tests are designed to run without Django/PostgreSQL dependencies.
 Run with: python -m unittest core.tests -v
 """
 
-import re
-import sys
 import unittest
-from collections import deque
-from urllib.parse import urldefrag, urljoin, urlparse
+from urllib.parse import urldefrag, urlparse
 
 from core.html_extract import extract_title_and_text
 

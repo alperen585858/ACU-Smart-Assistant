@@ -2,7 +2,7 @@ import os
 
 from django.http import JsonResponse
 from drf_spectacular.utils import OpenApiExample, OpenApiResponse, extend_schema, inline_serializer
-from rest_framework import serializers, status
+from rest_framework import serializers
 from rest_framework.decorators import api_view, parser_classes
 from rest_framework.parsers import JSONParser
 

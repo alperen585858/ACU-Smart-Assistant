@@ -13,8 +13,6 @@ from django.db import connection
 from django.db.models import Q
 from pgvector.django import CosineDistance
 
-logger = logging.getLogger("core.rag")
-
 from core.embeddings import embed_texts
 from core.models import DocumentChunk, Page
 from core.rag_config import (
@@ -39,6 +37,8 @@ from core.rag_keywords import (
     stem_engineering_boost_terms,
     structured_list_boost_terms,
 )
+
+logger = logging.getLogger("core.rag")
 
 
 _pg_trgm_cache: bool | None = None

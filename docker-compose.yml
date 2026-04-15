@@ -2,8 +2,12 @@
 # Mac’te ayrıca npm run dev / manage.py runserver çalıştırmanız gerekmez; Next.js bu dosyadaki
 # frontend servisinin içinde otomatik başlar (Dockerfile: npm run dev).
 #
-# Tarayıcıdan önerilen giriş: http://localhost:${NGINX_HOST_PORT:-8080} (Nginx → /api → Django, / → Next.js).
-# Doğrudan frontend/backend portları hâlâ açık; API için yalnızca Next kullanıyorsanız NEXT_PUBLIC_API_URL’ü buna göre ayarlayın.
+# Nginx ile tek giriş: http://localhost:${NGINX_HOST_PORT:-8080} (Nginx → /api → Django, / → Next.js).
+# Şimdilik proxy’yi başlatmayacaksanız: docker compose up -d db ollama backend frontend
+# ve .env içinde NEXT_PUBLIC_API_URL=http://localhost:8000 (veya doğrudan 3000 + 8000 kullanın).
+#
+# Backend konteyneri Ollama’ya host .env içindeki OLLAMA_BASE_URL (127.0.0.1) ile gitmemeli.
+# Varsayılan: http://ollama:11434. Özel durum: OLLAMA_DOCKER_URL=http://host.docker.internal:11434
 #
 # Servisler:
 #   1) acu-chatbot-db       → PostgreSQL
@@ -28,8 +32,9 @@ services:
     networks:
       - acu_net
     restart: unless-stopped
+    # ollama imajında curl olmayabiliyor; CLI sunucuya ping atar.
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags || exit 1"]
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -72,7 +77,7 @@ services:
       POSTGRES_PORT: "5432"
       ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1,backend,nginx}
       CSRF_TRUSTED_ORIGINS_EXTRA: ${CSRF_TRUSTED_ORIGINS_EXTRA:-http://localhost:8080,http://127.0.0.1:8080}
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      OLLAMA_BASE_URL: ${OLLAMA_DOCKER_URL:-http://ollama:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
       OLLAMA_NUM_PREDICT: ${OLLAMA_NUM_PREDICT:-384}
       OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-8192}
