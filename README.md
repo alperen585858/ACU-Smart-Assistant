@@ -70,12 +70,6 @@ docker compose up -d --build
 docker compose exec backend python manage.py refresh_rag --max-pages 60 --depth 2
 ```
 
-Sonrasinda dogrulama (istege bagli):
-
-```bash
-docker compose exec backend python manage.py rag_verify_refresh --top-n 120
-```
-
 4. Erisim noktalarini ac:
 
 - Uygulama (Nginx): `http://localhost:8080` (veya `NGINX_HOST_PORT`)
@@ -87,8 +81,6 @@ Notlar:
 - `docker-compose.yml` icinde backend icin `OLLAMA_BASE_URL` varsayilani konteyner ici `http://ollama:11434` olarak ayarlidir.
 - Host tarafinda `manage.py` kosacaksan `POSTGRES_HOST=localhost` ve hosta acilan portu (genelde `5433`) kullan.
 
-`refresh_rag` varsayilanlari ve `--keep-existing` / `--without-obs` secenekleri icin: [RAG_VERI_PIPELINE_REHBERI.md](RAG_VERI_PIPELINE_REHBERI.md).
-
 ## Docker Olmadan Yerel Gelistirme
 
 Bu modda backend ve frontend hostta calisir; PostgreSQL+pgvector zorunludur.
@@ -99,14 +91,17 @@ Bu modda backend ve frontend hostta calisir; PostgreSQL+pgvector zorunludur.
 CREATE EXTENSION IF NOT EXISTS vector;
 ```
 
-2. Proje kokunden `.env` olustur ve duzenle. Django **`Project/.env`** dosyasini yukler (`backend/.env` degil). `POSTGRES_*` degerlerini yerel Postgres’e gore ayarla; host’ta DB portu genelde `5433` ise `POSTGRES_HOST=localhost`, `POSTGRES_PORT=5433` kullan.
+2. Koke `.env` kopyala ve duzenle:
 
-3. Backend icin sanal ortam:
+```bash
+cp .env.example .env
+```
+
+3. Backend:
 
 ```bash
 cd backend
 python3 -m venv .venv
-# Windows: .venv\Scripts\Activate.ps1
 source .venv/bin/activate
 pip install -r requirements.txt
 python manage.py migrate
@@ -122,26 +117,11 @@ echo "NEXT_PUBLIC_API_URL=http://localhost:8000" > .env.local
 npm run dev
 ```
 
-5. Yerel Ollama kullaniyorsan: [ollama.com](https://ollama.com) ile kur, `ollama serve`, ardindan `ollama pull llama3.2:3b`. `.env` icinde `OLLAMA_BASE_URL=http://127.0.0.1:11434`, `OLLAMA_MODEL=llama3.2:3b`.
-
-6. Ilk RAG verisini yukle:
+5. Ilk RAG verisini yukle:
 
 ```bash
 cd backend
 python manage.py refresh_rag --max-pages 60 --depth 2
-python manage.py rag_verify_refresh --top-n 120
-```
-
-`refresh_rag` mevcut `Page` / `DocumentChunk` kayitlarini varsayilan olarak temizler; detaylar ve operasyon standardi: [RAG_VERI_PIPELINE_REHBERI.md](RAG_VERI_PIPELINE_REHBERI.md).
-
-### Crawling notu
-
-[`scrape_acibadem`](backend/core/management/commands/scrape_acibadem.py) varsayilan olarak **requests + BeautifulSoup** kullanir; cikarilan metin cok kisaysa (or. Bologna tarzı sayfalar) bir kez **Selenium** ile headless Chrome’a duser—komutu calistiran makinede Chrome/Chromium gerekir (`selenium` `requirements.txt` icinde).
-
-Ornek:
-
-```bash
-python manage.py scrape_acibadem --crawl --max-pages 40 --depth 2 --delay 1.5
 ```
 
 ## RAG Veri Akisi ve Komutlar
