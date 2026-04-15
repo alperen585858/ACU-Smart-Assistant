@@ -1,160 +1,253 @@
 # ACU Smart Assistant
 
-Django API, Next.js chat UI, and RAG over crawled university pages using **PostgreSQL + pgvector** and local embeddings.
+ACU Smart Assistant; `Django` backend, `Next.js` frontend ve `PostgreSQL + pgvector` tabanli RAG (Retrieval-Augmented Generation) kullanan bir universite sohbet asistanidir.  
+Kaynak icerik `acibadem.edu.tr` sayfalarindan cekilir, parcalanir, embedding uretilir ve sohbet yanitlari bu baglamla desteklenir.
 
-## Requirements
+## Icerik
+
+- [Proje Ozeti](#proje-ozeti)
+- [Teknoloji Yigini](#teknoloji-yigini)
+- [Dizin Yapisi](#dizin-yapisi)
+- [Hizli Baslangic Docker Compose](#hizli-baslangic-docker-compose)
+- [Docker Olmadan Yerel Gelistirme](#docker-olmadan-yerel-gelistirme)
+- [RAG Veri Akisi ve Komutlar](#rag-veri-akisi-ve-komutlar)
+- [API Ozeti](#api-ozeti)
+- [Ortam Degiskenleri](#ortam-degiskenleri)
+- [CI/CD ve Deploy](#cicd-ve-deploy)
+- [Sorun Giderme](#sorun-giderme)
+
+## Proje Ozeti
+
+- **Backend (`backend`)**: Django REST API, sohbet oturum yonetimi, RAG retrieval, LLM cagri katmani.
+- **Frontend (`frontend`)**: Next.js tabanli chat arayuzu, session gecmisi, RAG meta gorunumu.
+- **Veritabani**: PostgreSQL + `pgvector` (`VectorField(384)`).
+- **LLM**: Varsayilan `Ollama`, opsiyonel `Claude` (Anthropic API).
+- **Dokuman kaynagi**: `acibadem.edu.tr` alanindaki sayfalar (`/en` odakli crawl).
+
+## Teknoloji Yigini
 
 - Python 3.12+
-- Node.js 20+ (for Next.js)
-- PostgreSQL **15+** with the **pgvector** extension (Docker image `pgvector/pgvector:pg15` or a local install with `CREATE EXTENSION vector`)
-- Optional: [Ollama](https://ollama.com/) for local LLM inference
+- Django 6
+- PostgreSQL 15 + pgvector
+- Node.js 22 (frontend ve CI ile uyumlu)
+- Next.js 16
+- Docker + Docker Compose v2
 
-## Geliştirme ortamı kurulumu
+## Dizin Yapisi
 
-Python sanal ortamı için `backend/.venv` kullanın.
-
-1. Create and activate virtual environment:
-
-   ```bash
-   cd backend
-   python3 -m venv .venv
-   source .venv/bin/activate
-   ```
-
-2. Install backend dependencies:
-
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. Install frontend dependencies:
-
-   ```bash
-   cd ../frontend
-   npm install
-   ```
-
-4. Return to backend for migrations and API run:
-
-   ```bash
-   cd ../backend
-   python manage.py migrate
-   python manage.py runserver
-   ```
-
-## Quick start
-
-1. Clone the repo and enter the project directory.
-
-2. Copy environment template and adjust values (never commit `.env`):
-
-   ```bash
-   cp .env.example .env
-   ```
-
-3. Install dependencies:
-
-   ```bash
-   cd backend && pip install -r requirements.txt
-   cd ../frontend && npm install
-   ```
-
-4. Run migrations:
-
-   ```bash
-   cd ../backend && python manage.py migrate
-   ```
-
-5. Load corpus and build embeddings (one command):
-
-   ```bash
-   python manage.py refresh_rag --max-pages 60 --depth 2
-   ```
-
-   `refresh_rag` now runs `clear -> scrape_acibadem -> scrape_obs_bologna -> build_page_embeddings` (unless `--keep-existing` or `--without-obs` are used). Operational details and deletion defaults: see [RAG_VERI_PIPELINE_REHBERI.md](RAG_VERI_PIPELINE_REHBERI.md).
-
-   Then run the standard verification flow:
-
-   ```bash
-   python manage.py rag_verify_refresh --top-n 120
-   ```
-
-6. Start services:
-
-   ```bash
-   # Terminal 1 — API
-   cd backend && python manage.py runserver
-
-   # Terminal 2 — UI (set NEXT_PUBLIC_API_URL in frontend/.env.local if needed)
-   cd frontend && npm run dev
-   ```
-
-## Database
-
-Pick **one** of the paths below (Docker, bare Postgres, or host-only dev).
-
-### A) Docker Compose (full stack)
-
-From the project root:
-
-```bash
-docker compose up -d
+```text
+Project/
+  backend/                 Django API + RAG + management commands
+  frontend/                Next.js chat UI
+  nginx/                   Reverse proxy config
+  scripts/                 Yardimci scriptler (ollama entrypoint vb.)
+  deploy/                  Uretim/deploy rehber ve policy taslaklari
+  docker-compose.yml       Gelistirme stack
+  docker-compose.prod.yml  Sunucuda source'tan production build
+  docker-compose.ec2.yml   ECR imajlari ile production calisma
+  DEPLOYMENT.md            Ayrintili yayina alma rehberi
 ```
 
-Use `.env` so that **host** tools (optional `manage.py` on the machine) point at the published DB port (often `5433` → set `POSTGRES_PORT=5433`, `POSTGRES_HOST=localhost`). Containers use `POSTGRES_HOST=db` and port `5432` internally.
+## Hizli Baslangic Docker Compose
 
-### B) Local PostgreSQL + pgvector
+En az kurulum maliyetiyle tum servisi ayaga kaldirmak icin:
 
-Install Postgres and pgvector, create a database and role, then:
+1. Proje kokunde `.env` olustur:
+
+```bash
+cp .env.example .env
+```
+
+2. Servisleri baslat:
+
+```bash
+docker compose up -d --build
+```
+
+3. Ilk RAG indeksini olustur (`backend` konteynerinde):
+
+```bash
+docker compose exec backend python manage.py refresh_rag --max-pages 60 --depth 2
+```
+
+4. Erisim noktalarini ac:
+
+- Uygulama (Nginx): `http://localhost:8080` (veya `NGINX_HOST_PORT`)
+- Backend health: `http://localhost:8000/api/health/` (veya `BACKEND_HOST_PORT`)
+- API dokumantasyonu: `http://localhost:8000/api/docs/`
+
+Notlar:
+
+- `docker-compose.yml` icinde backend icin `OLLAMA_BASE_URL` varsayilani konteyner ici `http://ollama:11434` olarak ayarlidir.
+- Host tarafinda `manage.py` kosacaksan `POSTGRES_HOST=localhost` ve hosta acilan portu (genelde `5433`) kullan.
+
+## Docker Olmadan Yerel Gelistirme
+
+Bu modda backend ve frontend hostta calisir; PostgreSQL+pgvector zorunludur.
+
+1. Veritabani hazirla:
 
 ```sql
 CREATE EXTENSION IF NOT EXISTS vector;
 ```
 
-Set `POSTGRES_HOST=localhost` and `POSTGRES_PORT=5432` (or your local port) in `.env`.
-
-### C) Local development without Docker (typical dev workflow)
-
-Use this when you run Django and Next.js on the host and only use local services (no `docker compose`).
-
-1. **PostgreSQL + pgvector** — Postgres must have the `vector` extension (`CREATE EXTENSION vector;` on your database). This project is PostgreSQL-only; SQLite is **not supported**.
-
-2. **Env file** — From the **project root** (`Project/`), run `cp .env.example .env`. Django loads **`Project/.env`** (not `backend/.env`). Match `POSTGRES_*` to your local DB. For Ollama on the same machine, set:
-   - `OLLAMA_BASE_URL=http://127.0.0.1:11434`
-   - `OLLAMA_MODEL=llama3.2:3b` (or uncomment / add these lines if they are commented in your copy)
-
-3. **Ollama** — Install from [ollama.com](https://ollama.com), start it (macOS menu app or `ollama serve`), then once: `ollama pull llama3.2:3b`.
-
-4. **Backend** — `cd backend && pip install -r requirements.txt && python manage.py migrate && python manage.py runserver`
-
-5. **RAG index (first time or after crawl changes)** — `cd backend && python manage.py refresh_rag --max-pages 60 --depth 2` (or `python manage.py rag_verify_refresh --top-n 120` right after refresh). See [RAG_VERI_PIPELINE_REHBERI.md](RAG_VERI_PIPELINE_REHBERI.md) before running `refresh_rag` without `--keep-existing` (it clears existing pages/chunks by default).
-
-6. **Frontend** — Ensure `frontend/.env.local` contains `NEXT_PUBLIC_API_URL=http://localhost:8000`, then `cd frontend && npm install && npm run dev`.
-
-Open the Next.js URL (usually http://localhost:3000). The browser talks to Django on port 8000 via `NEXT_PUBLIC_API_URL`.
-
-## Crawling `acibadem.edu.tr`
-
-[`scrape_acibadem`](backend/core/management/commands/scrape_acibadem.py) uses **requests + BeautifulSoup** by default. If the extracted text is too short (typical for JS-rendered pages such as Bologna-style catalogs), it falls back once to **Selenium** with headless Chrome—so **Chrome or Chromium** must be installed on the machine that runs the command (`selenium` is listed in `backend/requirements.txt`).
-
-Example:
+2. Koke `.env` kopyala ve duzenle:
 
 ```bash
-cd backend && python manage.py scrape_acibadem --crawl --max-pages 40 --delay 1.5
+cp .env.example .env
 ```
 
-For end-to-end crawl → chunk → embed, use `refresh_rag` (see Quick start) or the pipeline notes in [RAG_VERI_PIPELINE_REHBERI.md](RAG_VERI_PIPELINE_REHBERI.md). Use `--without-obs` only when OBS scraping is intentionally skipped.
+3. Backend:
 
-## Environment variables
+```bash
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python manage.py migrate
+python manage.py runserver
+```
 
-See [`.env.example`](.env.example) for all options: DB credentials, Ollama/Claude, `EMBEDDING_MODEL`, `RAG_TOP_K`, `RAG_MAX_DISTANCE`, and frontend `NEXT_PUBLIC_*` URLs.
+4. Frontend:
 
-## What not to commit
+```bash
+cd frontend
+npm install
+echo "NEXT_PUBLIC_API_URL=http://localhost:8000" > .env.local
+npm run dev
+```
 
-- `.env` (secrets and machine-specific ports)
-- Python `venv` / `.venv`
-- `frontend/node_modules`, `frontend/.next`
+5. Ilk RAG verisini yukle:
 
-## License
+```bash
+cd backend
+python manage.py refresh_rag --max-pages 60 --depth 2
+```
 
-Add your license here if you publish the repository publicly.
+## RAG Veri Akisi ve Komutlar
+
+### Veri modeli
+
+- `core.Page`: crawl edilen sayfa
+- `core.DocumentChunk`: sayfa parcasi + embedding (`dim=384`)
+
+### End-to-end komut (onerilen)
+
+```bash
+cd backend
+python manage.py refresh_rag --max-pages 60 --depth 2
+```
+
+`refresh_rag` varsayilan davranisi:
+
+- Once mevcut `Page` ve `DocumentChunk` kayitlarini temizler
+- Ardindan `scrape_acibadem` calistirir
+- Sonra `build_page_embeddings` ile embeddingleri yazar
+
+Eski kayitlari korumak icin:
+
+```bash
+python manage.py refresh_rag --keep-existing
+```
+
+### Ayrik calisma (manuel kontrol)
+
+Sadece crawl:
+
+```bash
+python manage.py scrape_acibadem --crawl --max-pages 40 --depth 2 --delay 1.5
+```
+
+Sadece embedding:
+
+```bash
+python manage.py build_page_embeddings --batch-size 16 --chunk-size 700 --chunk-overlap 120
+```
+
+### Diagnostik komutlar
+
+- `python manage.py rag_stats` -> sayfa/chunk kapsami
+- `python manage.py rag_index_audit` -> index kapsam ve defaultlarin ozeti
+- `python manage.py rag_diagnose_coverage --top-n 120` -> ornek sorularda retrieval kapsami
+
+## API Ozeti
+
+Taban path: `/api`
+
+### Health
+
+- `GET /api/health/` -> DB baglantisi dahil servis sagligi
+
+### Chat
+
+- `POST /api/chat/`
+  - Stateful mod: `client_id` (+ opsiyonel `session_id`) ile oturumlu konusma
+  - Stateless mod: `messages` listesi ile tek istekte gecmis gonderimi
+- `GET /api/chat/sessions/?client_id=<uuid>` -> kullanicinin oturum listesi
+- `GET /api/chat/sessions/<session_uuid>/?client_id=<uuid>` -> oturum detaylari
+- `DELETE /api/chat/sessions/<session_uuid>/?client_id=<uuid>` -> oturum silme
+
+### API Dokumantasyon
+
+- OpenAPI schema: `/api/schema/`
+- Swagger UI: `/api/docs/`
+
+## Ortam Degiskenleri
+
+Tum degiskenler icin referans dosya: [`.env.example`](.env.example)
+
+En kritikler:
+
+- Veritabani: `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_HOST`, `POSTGRES_PORT`
+- LLM secimi: `LLM_BACKEND=ollama|claude`
+- Ollama: `OLLAMA_BASE_URL`, `OLLAMA_MODEL`, `OLLAMA_NUM_CTX`, `OLLAMA_HTTP_TIMEOUT`
+- Claude: `ANTHROPIC_API_KEY`, `CLAUDE_MODEL`
+- RAG ayarlari: `RAG_MAX_CHARS`, `RAG_TOP_K`, `RAG_MAX_DISTANCE`, `RAG_RELAX_ON_EMPTY`
+- Frontend: `NEXT_PUBLIC_API_URL`
+- Rate limit: `RATE_LIMIT_REQUESTS`, `RATE_LIMIT_WINDOW`
+
+Onemli:
+
+- Django ayarlari `.env` dosyasini proje kokunden (`Project/.env`) yukler.
+- Uretimde `SECRET_KEY` zorunludur.
+
+## CI/CD ve Deploy
+
+### CI
+
+`/.github/workflows/ci.yml`:
+
+- Backend: `ruff check` + `python -m unittest core.tests -v`
+- Frontend: `npm ci` + `npm run lint`
+
+### Otomatik EC2 deploy (sunucuda build)
+
+`/.github/workflows/deploy-ec2-simple.yml`:
+
+- `main` push sonrasi CI basariliysa SSH ile EC2'ye baglanir
+- Sunucuda `git fetch/reset` + `docker compose -f docker-compose.prod.yml up -d --build`
+
+### AWS ECR deploy (manuel tetikleme)
+
+`/.github/workflows/deploy-aws.yml`:
+
+- Backend/frontend production imajlarini build edip ECR'a push eder
+- Opsiyonel olarak EC2'de `docker-compose.ec2.yml` ile imajlari cekip restart eder
+- Opsiyonel ECS rolling restart adimlari vardir
+
+Daha ayrintili operasyon bilgisi icin: [`DEPLOYMENT.md`](DEPLOYMENT.md) ve [`deploy/README.md`](deploy/README.md)
+
+## Sorun Giderme
+
+- **`relation ... does not exist`**: `python manage.py migrate` calistir.
+- **`vector extension` hatasi**: DB'de `CREATE EXTENSION vector;` eksik.
+- **Frontend backend'e baglanamiyor**: `NEXT_PUBLIC_API_URL` degerini ve backend portunu kontrol et.
+- **Chat cevaplari zayif/alakasiz**: `refresh_rag` calistir, sonra `rag_stats` ve `rag_diagnose_coverage` ile kapsami kontrol et.
+- **Ollama ulasilamiyor**: `OLLAMA_BASE_URL` ve Ollama servisinin aktifligini dogrula.
+- **413 Request body too large**: mesaj boyutu limitlerini (`MAX_REQUEST_BODY_BYTES`, `MAX_MESSAGE_LENGTH`) gozden gecir.
+
+## Guvenlik ve Repo Hijyeni
+
+- `.env` ve gizli anahtarlari repoya commit etme.
+- Yerel artifactleri commit etme: `.venv`, `node_modules`, `.next`, loglar, cache klasorleri.
+- Docker build context'ini kucuk tutmak icin `backend/.dockerignore` ve `frontend/.dockerignore` dosyalari kullanilir.

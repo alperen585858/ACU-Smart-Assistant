@@ -1,6 +1,42 @@
-__pycache__
+__pycache__/
 *.py[cod]
-.venv
-venv
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Secrets / local env files
 .env
-.git
+.env.*
+
+# VCS / editor / OS
+.git/
+.idea/
+.vscode/
+.DS_Store
+
+# Python tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.tox/
+.nox/
+
+# Test / coverage / logs
+htmlcov/
+.coverage
+.coverage.*
+*.log
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Local DB / notebooks
+*.sqlite3
+.ipynb_checkpoints/

@@ -1,7 +1,6 @@
 import os
 import re
 
-from core.models import DocumentChunk
 from core.rag_keywords import (
     RAG_DEPT_OR_FACULTY_INTENT_RE,
     RAG_STEM_OR_ENGINEERING_INTENT_RE,
