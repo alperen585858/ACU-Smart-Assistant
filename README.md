@@ -71,12 +71,12 @@ Python sanal ortamı için `backend/.venv` kullanın.
    python manage.py refresh_rag --max-pages 60 --depth 2
    ```
 
-   Operational details, manual crawl → embed order, and **`refresh_rag` data-deletion defaults**: see [RAG_VERI_PIPELINE_REHBERI.md](RAG_VERI_PIPELINE_REHBERI.md).
+   `refresh_rag` now runs `clear -> scrape_acibadem -> scrape_obs_bologna -> build_page_embeddings` (unless `--keep-existing` or `--without-obs` are used). Operational details and deletion defaults: see [RAG_VERI_PIPELINE_REHBERI.md](RAG_VERI_PIPELINE_REHBERI.md).
 
-   Or inspect index stats:
+   Then run the standard verification flow:
 
    ```bash
-   python manage.py rag_stats
+   python manage.py rag_verify_refresh --top-n 120
    ```
 
 6. Start services:
@@ -127,7 +127,7 @@ Use this when you run Django and Next.js on the host and only use local services
 
 4. **Backend** — `cd backend && pip install -r requirements.txt && python manage.py migrate && python manage.py runserver`
 
-5. **RAG index (first time or after crawl changes)** — `cd backend && python manage.py refresh_rag --max-pages 60 --depth 2` (or `rag_stats` to inspect). See [RAG_VERI_PIPELINE_REHBERI.md](RAG_VERI_PIPELINE_REHBERI.md) before running `refresh_rag` without `--keep-existing` (it clears existing pages/chunks by default).
+5. **RAG index (first time or after crawl changes)** — `cd backend && python manage.py refresh_rag --max-pages 60 --depth 2` (or `python manage.py rag_verify_refresh --top-n 120` right after refresh). See [RAG_VERI_PIPELINE_REHBERI.md](RAG_VERI_PIPELINE_REHBERI.md) before running `refresh_rag` without `--keep-existing` (it clears existing pages/chunks by default).
 
 6. **Frontend** — Ensure `frontend/.env.local` contains `NEXT_PUBLIC_API_URL=http://localhost:8000`, then `cd frontend && npm install && npm run dev`.
 
@@ -143,7 +143,7 @@ Example:
 cd backend && python manage.py scrape_acibadem --crawl --max-pages 40 --delay 1.5
 ```
 
-For end-to-end crawl → chunk → embed, use `refresh_rag` (see Quick start) or the pipeline notes in [RAG_VERI_PIPELINE_REHBERI.md](RAG_VERI_PIPELINE_REHBERI.md).
+For end-to-end crawl → chunk → embed, use `refresh_rag` (see Quick start) or the pipeline notes in [RAG_VERI_PIPELINE_REHBERI.md](RAG_VERI_PIPELINE_REHBERI.md). Use `--without-obs` only when OBS scraping is intentionally skipped.
 
 ## Environment variables
 
