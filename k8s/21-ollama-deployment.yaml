@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: acu-ollama
+  namespace: acu-smart-assistant
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: acu-ollama
+  template:
+    metadata:
+      labels:
+        app: acu-ollama
+    spec:
+      containers:
+        - name: ollama
+          image: ollama/ollama:latest
+          ports:
+            - containerPort: 11434
+              name: http
+          env:
+            - name: OLLAMA_PULL_MODEL
+              value: ""
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              ollama serve &
+              SERVER_PID=$!
+              echo "Waiting for Ollama server to start..."
+              sleep 5
+              if [ -n "$OLLAMA_PULL_MODEL" ]; then
+                echo "Pulling model: $OLLAMA_PULL_MODEL"
+                ollama pull "$OLLAMA_PULL_MODEL" || true
+              fi
+              wait $SERVER_PID
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - ollama list >/dev/null 2>&1
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - ollama list >/dev/null 2>&1
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          volumeMounts:
+            - name: ollama-data
+              mountPath: /root/.ollama
+      volumes:
+        - name: ollama-data
+          persistentVolumeClaim:
+            claimName: acu-ollama-pvc
+

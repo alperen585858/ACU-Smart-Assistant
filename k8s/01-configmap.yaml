@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: acu-config
+  namespace: acu-smart-assistant
+data:
+  DEBUG: "true"
+  LLM_BACKEND: "ollama"
+
+  POSTGRES_USER: "acu"
+  POSTGRES_DB: "acu_chatbot"
+  POSTGRES_HOST: "acu-db"
+  POSTGRES_PORT: "5432"
+
+  OLLAMA_BASE_URL: "http://acu-ollama:11434"
+  OLLAMA_MODEL: "llama3.2:3b"
+  OLLAMA_NUM_PREDICT: "384"
+  OLLAMA_NUM_CTX: "8192"
+  OLLAMA_HTTP_TIMEOUT: "120"
+
+  ALLOWED_HOSTS: "*"
+  CSRF_TRUSTED_ORIGINS_EXTRA: "http://localhost:8080,http://127.0.0.1:8080"
+
