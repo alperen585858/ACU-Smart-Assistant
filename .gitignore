@@ -204,6 +204,9 @@ node_modules/
 frontend/.next/
 frontend/node_modules/
 
+# Local kind binary / tooling (not part of the app)
+.k8s-kind/
+
 # Cursor
 #  Cursor is an AI-powered code editor. `.cursorignore` specifies files/directories to
 #  exclude from AI features like autocomplete and code analysis. Recommended for sensitive data

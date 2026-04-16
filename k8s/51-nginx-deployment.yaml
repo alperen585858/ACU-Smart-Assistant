@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: acu-nginx
+  namespace: acu-smart-assistant
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: acu-nginx
+  template:
+    metadata:
+      labels:
+        app: acu-nginx
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.27-alpine
+          ports:
+            - containerPort: 80
+              name: http
+          volumeMounts:
+            - name: nginx-conf
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+              readOnly: true
+      volumes:
+        - name: nginx-conf
+          configMap:
+            name: acu-nginx-config
+

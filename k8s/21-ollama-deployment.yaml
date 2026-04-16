@@ -5,6 +5,8 @@ metadata:
   namespace: acu-smart-assistant
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: acu-ollama
@@ -16,6 +18,7 @@ spec:
       containers:
         - name: ollama
           image: ollama/ollama:latest
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 11434
               name: http
