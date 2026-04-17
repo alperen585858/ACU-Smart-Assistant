@@ -784,7 +784,11 @@ export default function ChatPage() {
                                   </strong>
                                 </p>
                               ) : null}
-                              {msg.rag.chunks_used === 0 ? (
+                              {msg.rag.chunks_used === 0 && msg.rag.reason?.startsWith("skipped_") ? (
+                                <p className="text-[#0b2e3b]/50">
+                                  Intent: {msg.rag.reason === "skipped_smalltalk_no_rag" ? "smalltalk" : "off-topic"} — RAG skipped.
+                                </p>
+                              ) : msg.rag.chunks_used === 0 ? (
                                 <p className="text-amber-800/90">
                                   No close match from the crawled site for this question (
                                   <code className="rounded bg-[#0b2e3b]/5 px-1">
