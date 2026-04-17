@@ -1,6 +1,6 @@
 """
 Vector RAG retrieval: multi-query embeddings, merged distances, wide candidate pool,
-rerank (word overlap + optional pg_trgm), then char-budget fill.
+rerank (word overlap + optional pg_trgm + cross-encoder), then char-budget fill.
 """
 
 from __future__ import annotations
@@ -16,6 +16,8 @@ from pgvector.django import CosineDistance
 from core.embeddings import embed_texts
 from core.models import DocumentChunk, Page
 from core.rag_config import (
+    RAG_CROSS_ENCODER_RERANK,
+    RAG_CROSS_ENCODER_WEIGHT,
     RAG_KEYWORD_BOOST,
     RAG_LEXICAL_WEIGHT,
     RAG_MAX_CHARS,
@@ -359,15 +361,33 @@ def _rerank_items(
         ):
             sim_map[ch.pk] = float(getattr(ch, "sim", 0.0) or 0.0)
 
+    # Cross-encoder reranking (only top candidates to keep latency low)
+    ce_score_map: dict[int, float] = {}
+    CE_TOP_N = 15
+    if RAG_CROSS_ENCODER_RERANK:
+        from core.embeddings import rerank_passages
+        raw_q = (raw_user or composed or "").strip()[:300]
+        ce_items = items[:CE_TOP_N]
+        passages = [str(ch.content or "")[:500] for ch, _ in ce_items]
+        t_ce = time.time()
+        ce_scores = rerank_passages(raw_q, passages)
+        logger.info("RAG cross-encoder rerank: %.2fs (%d items)", time.time() - t_ce, len(ce_items))
+        if ce_scores:
+            max_s = max(abs(s) for s in ce_scores) or 1.0
+            for i, (ch, _) in enumerate(ce_items):
+                ce_score_map[ch.pk] = ce_scores[i] / max_s
+
     def sort_key(it: tuple[DocumentChunk, float]) -> float:
         ch, d = it
         ov = _word_overlap_count(str(ch.content or ""), tokens)
         sim = sim_map.get(ch.pk, 0.0)
-        # Lower is better: pull down score when overlap/sim is high
+        ce = ce_score_map.get(ch.pk, 0.0)
+        # Lower is better: pull down score when overlap/sim/cross-encoder is high
         key = (
             d
             - RAG_RERANK_OVERLAP_WEIGHT * min(ov, 30) / 30.0
             - RAG_LEXICAL_WEIGHT * sim
+            - RAG_CROSS_ENCODER_WEIGHT * ce
         )
         if stem_query:
             key += _stem_noise_penalty(

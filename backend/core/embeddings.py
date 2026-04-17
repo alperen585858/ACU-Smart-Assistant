@@ -103,3 +103,43 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
 def embed_query(text: str) -> list[float]:
     vectors = embed_texts([text.strip()])
     return vectors[0] if vectors else []
+
+
+# ── Cross-encoder reranker ──────────────────────────────────────────────
+_RERANKER_MODEL_NAME = os.environ.get(
+    "RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-2-v2"
+)
+_reranker_lock = threading.Lock()
+_reranker_instance = None
+_RERANKER_LOAD_FAILED = False
+
+
+def get_reranker():
+    """Lazy-load cross-encoder reranker (tiny model, ~20MB)."""
+    global _reranker_instance, _RERANKER_LOAD_FAILED
+    if _RERANKER_LOAD_FAILED:
+        return None
+    if _reranker_instance is not None:
+        return _reranker_instance
+    with _reranker_lock:
+        if _reranker_instance is not None:
+            return _reranker_instance
+        try:
+            from sentence_transformers import CrossEncoder
+            _reranker_instance = CrossEncoder(_RERANKER_MODEL_NAME)
+            logger.info("Reranker model loaded: %s", _RERANKER_MODEL_NAME)
+            return _reranker_instance
+        except Exception:
+            logger.warning("Reranker model failed to load, falling back to lexical rerank")
+            _RERANKER_LOAD_FAILED = True
+            return None
+
+
+def rerank_passages(query: str, passages: list[str]) -> list[float]:
+    """Score query-passage pairs with cross-encoder. Returns list of scores."""
+    reranker = get_reranker()
+    if reranker is None or not passages:
+        return []
+    pairs = [[query, p] for p in passages]
+    scores = reranker.predict(pairs)
+    return [float(s) for s in scores]

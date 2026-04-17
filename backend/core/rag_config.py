@@ -29,3 +29,7 @@ RAG_LEXICAL_WEIGHT = float(os.environ.get("RAG_LEXICAL_WEIGHT", "0.12"))
 
 # Added to effective cosine distance when sorting context (STEM queries); pushes news/events pages down.
 RAG_STEM_NOISE_URL_PENALTY = float(os.environ.get("RAG_STEM_NOISE_URL_PENALTY", "0.14"))
+
+# Cross-encoder reranking (semantic rerank after vector retrieval)
+RAG_CROSS_ENCODER_RERANK = _env_bool("RAG_CROSS_ENCODER_RERANK", "true")
+RAG_CROSS_ENCODER_WEIGHT = float(os.environ.get("RAG_CROSS_ENCODER_WEIGHT", "0.4"))
