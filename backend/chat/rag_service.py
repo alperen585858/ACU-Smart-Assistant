@@ -96,15 +96,17 @@ _BROAD_OVERVIEW_QUESTION_RE = re.compile(
     re.IGNORECASE,
 )
 _SMALLTALK_RE = re.compile(
-    r"^[\s!?.`,]*("
-    r"(hi|hello|hey|yo|hiya)(\s+(there|everyone|all|guys|team))?"
-    r"|merhaba(\s+nasilsin|\s+nasılsın)?|selam(\s+aleykum)?|\bsa\b|\bslm\b"
+    r"^[\s!?.`,;'\"]*("
+    r"(hi|hello|hey|yo|hiya|sup|hola|howdy)(\s+(there|everyone|all|guys|team|baby|bro|dude|man))?"
+    r"|merhaba(\s+nasilsin|\s+nasılsın)?|selam(\s+aleykum)?|\bsa\b|\bslm\b|\bnaber\b"
     r"|good\s+(morning|afternoon|evening|night)(\s+there)?"
-    r"|how\s+are\s+you(\s+doing)?|what'?s\s+up|\bwassup\b|you\s+ok\?"
+    r"|how\s+are\s+you(\s+doing)?|what'?s\s+up|\bwassup\b|you\s+ok\?|what'?s\s+good"
+    r"|yo\s+what'?s\s+good"
     r"|thanks?(\s+a\s+lot)?|thank\s+you(\s+so\s+much)?|\bthx\b|\bty\b"
-    r"|teşekkürler?|tesekkurler?"
-    r"|\bok\b|okay|tamam|\bbye\b|goodbye|see\s+you|güle\s+güle"
-    r")[\s!?.`,]*$",
+    r"|teşekkürler?|tesekkurler?|sağ\s*ol|sagol"
+    r"|\bok\b|okay|tamam|\bbye\b|goodbye|see\s+you|güle\s+güle|\bbb\b"
+    r"|nice|cool|great|awesome|perfect|alright"
+    r")[\s!?.`,;'\"]*$",
     re.IGNORECASE,
 )
 _SMALLTALK_EXCLUDE_RE = re.compile(
@@ -115,6 +117,42 @@ _SMALLTALK_EXCLUDE_RE = re.compile(
     r"\bhow\s+(do|can|i|to|much|many|long|about|apply|register)\b",
     re.IGNORECASE,
 )
+
+
+_OFFTOPIC_RE = re.compile(
+    r"\b(weather|forecast|hava\s*durumu|recipe|tarif|joke|fıkra|espri|"
+    r"movie|film|music|müzik|song|şarkı|game|oyun|football|futbol|"
+    r"basketball|basketbol|bitcoin|crypto|kripto|stock|borsa|"
+    r"diet|diyet|horoscope|burç|netflix|spotify|instagram|tiktok|"
+    r"who\s+is\s+elon|who\s+is\s+trump|who\s+is\s+biden|"
+    r"write\s+me\s+a\s+(poem|story|code|essay)|"
+    r"translate|çevir|what\s+time|saat\s+kaç)\b",
+    re.IGNORECASE,
+)
+_OFFTOPIC_EXCLUDE_RE = re.compile(
+    r"\b(acu|acıbadem|acibadem|university|üniversite|campus|kampüs|"
+    r"faculty|fakülte|program|department|bölüm|student|öğrenci|"
+    r"admission|kayıt|tuition|ücret|scholarship|burs)\b",
+    re.IGNORECASE,
+)
+
+SYSTEM_OFFTOPIC = (
+    "You are the official website assistant for Acıbadem Mehmet Ali Aydınlar University (ACU). "
+    "The user asked something unrelated to the university. "
+    "Politely say you can only help with ACU-related topics and offer to assist with "
+    "programs, admissions, campus life, or contact information. "
+    "Keep it to 1-2 warm sentences. Match the user's language (English or Turkish)."
+)
+RAG_META_REASON_SKIPPED_OFFTOPIC = "skipped_offtopic_no_rag"
+
+
+def _should_skip_rag_for_offtopic(user_plain: str) -> bool:
+    t = (user_plain or "").strip()
+    if not t or len(t) > 300:
+        return False
+    if _OFFTOPIC_EXCLUDE_RE.search(t):
+        return False
+    return bool(_OFFTOPIC_RE.search(t))
 
 
 def _should_skip_rag_for_smalltalk(user_plain: str) -> bool:
@@ -225,6 +263,8 @@ def _attach_llm_visibility_meta(meta: dict, user_llm: str, context_char_count: i
 def prepare_chat_prompts(rag_query: str, user_plain: str) -> tuple[str, str, dict]:
     user_plain = (user_plain or "").strip()
     force_english = _looks_english_only(user_plain)
+
+    # Layer 1: Smalltalk — skip RAG entirely
     if _should_skip_rag_for_smalltalk(user_plain):
         meta = {
             "embedding_ok": True,
@@ -238,6 +278,21 @@ def prepare_chat_prompts(rag_query: str, user_plain: str) -> tuple[str, str, dic
         _attach_llm_visibility_meta(meta, user_llm, 0)
         return SYSTEM_SMALLTALK, user_llm, meta
 
+    # Layer 2: Off-topic — skip RAG, polite redirect
+    if _should_skip_rag_for_offtopic(user_plain):
+        meta = {
+            "embedding_ok": True,
+            "chunks_used": 0,
+            "relaxed_retrieval": False,
+            "sources": [],
+            "rag_query_preview": "",
+            "reason": RAG_META_REASON_SKIPPED_OFFTOPIC,
+        }
+        user_llm = trim_message_for_llm(user_plain)
+        _attach_llm_visibility_meta(meta, user_llm, 0)
+        return SYSTEM_OFFTOPIC, user_llm, meta
+
+    # Layer 3: Real question — go to RAG
     context, sources, relaxed, emb_ok = _search_pages_with_meta(rag_query, user_plain)
     meta: dict = {
         "embedding_ok": emb_ok,
