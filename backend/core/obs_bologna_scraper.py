@@ -20,7 +20,7 @@ from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
-from core.html_extract import extract_title_and_text
+from core.html_extract import extract_title_text_and_embedding_units
 
 logger = logging.getLogger(__name__)
 
@@ -487,8 +487,8 @@ def collect_bologna_urls(
 
 def fetch_page_extract(
     driver: WebDriver, url: str, delay: float, retries: int = 2
-) -> tuple[str, str]:
-    """Navigate to url and return (title, text) via extract_title_and_text."""
+) -> tuple[str, str, list[str]]:
+    """Navigate to url and return (title, text, embedding_units)."""
     last_exc: Exception | None = None
     for attempt in range(retries + 1):
         try:
@@ -496,14 +496,14 @@ def fetch_page_extract(
             time.sleep(delay)
             wait_for_page_ready(driver)
             html = driver.page_source
-            title, text = extract_title_and_text(html)
+            title, text, units = extract_title_text_and_embedding_units(html)
             if not title:
                 title = url[:500]
-            return title, text
+            return title, text, units
         except WebDriverException as e:
             last_exc = e
             logger.warning("fetch_page_extract attempt %s failed for %s: %s", attempt, url, e)
             time.sleep(delay)
     if last_exc:
         logger.warning("Giving up on %s: %s", url, last_exc)
-    return url[:500], ""
+    return url[:500], "", []

@@ -10,7 +10,7 @@ import requests
 from bs4 import BeautifulSoup
 from django.core.management.base import BaseCommand
 
-from core.html_extract import extract_title_and_text
+from core.html_extract import extract_title_text_and_embedding_units
 from core.models import Page
 
 SOURCE_LABEL = "acibadem.edu.tr"
@@ -227,7 +227,7 @@ class Command(BaseCommand):
 
             fetched += 1
             html = resp.text
-            title, text = extract_title_and_text(html)
+            title, text, embedding_units = extract_title_text_and_embedding_units(html)
             if not title:
                 title = url[:500]
             if not text:
@@ -242,6 +242,7 @@ class Command(BaseCommand):
                     defaults={
                         "title": title,
                         "content": text,
+                        "embedding_units": embedding_units or None,
                         "source": SOURCE_LABEL,
                     },
                 )

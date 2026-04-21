@@ -6,6 +6,11 @@ class Page(models.Model):
     url = models.URLField(unique=True, max_length=2000)
     title = models.CharField(max_length=500, blank=True, default="")
     content = models.TextField()
+    embedding_units = models.JSONField(
+        null=True,
+        blank=True,
+        help_text="Optional list of DOM-derived text units (table row, list item, etc.) for entity-aware chunking.",
+    )
     source = models.CharField(max_length=100, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

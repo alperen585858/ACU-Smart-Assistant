@@ -6,6 +6,7 @@ from .models import DocumentChunk, Page
 @admin.register(Page)
 class PageAdmin(admin.ModelAdmin):
     list_display = ("title", "source", "updated_at")
+    readonly_fields = ("embedding_units",)
 
 
 @admin.register(DocumentChunk)

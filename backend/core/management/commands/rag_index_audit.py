@@ -53,13 +53,19 @@ class Command(BaseCommand):
             "Default --max-pages=40, --depth=2, English paths only unless --allow-non-english"
         )
         self.stdout.write(
-            "Page content trim: no explicit MAX_CONTENT_CHARS constant in current scraper."
+            "Page.content is trimmed in core.html_extract (MAX_CONTENT_CHARS); "
+            "embedding_units holds DOM record snippets when pages were scraped with the current extractor."
+        )
+        pages_with_units = Page.objects.exclude(embedding_units=None).count()
+        self.stdout.write(
+            f"Pages with non-null embedding_units: {pages_with_units} / {page_n}"
         )
 
         self.stdout.write("")
         self.stdout.write(self.style.NOTICE("=== build_page_embeddings defaults ==="))
         self.stdout.write(
-            "--chunk-size=700, --chunk-overlap=120, --batch-size=16 (see command --help)"
+            "--chunk-size=700, --chunk-overlap=120, --batch-size=16; "
+            "chunking uses core.chunking.chunks_for_embedding (entity rows when units present)."
         )
 
         self.stdout.write("")

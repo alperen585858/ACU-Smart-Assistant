@@ -7,6 +7,7 @@ from functools import lru_cache
 
 from sentence_transformers import SentenceTransformer
 
+from core.chunking import chunk_text
 
 logger = logging.getLogger("core.embeddings")
 
@@ -21,27 +22,6 @@ _cache_lock = threading.Lock()
 
 def _cache_key(text: str) -> str:
     return hashlib.md5(text.encode("utf-8")).hexdigest()
-
-
-def chunk_text(text: str, chunk_size: int = 700, chunk_overlap: int = 120) -> list[str]:
-    clean = " ".join((text or "").split())
-    if not clean:
-        return []
-    if chunk_overlap >= chunk_size:
-        raise ValueError("chunk_overlap must be smaller than chunk_size")
-
-    chunks: list[str] = []
-    start = 0
-    step = chunk_size - chunk_overlap
-    while start < len(clean):
-        end = min(len(clean), start + chunk_size)
-        piece = clean[start:end].strip()
-        if piece:
-            chunks.append(piece)
-        if end >= len(clean):
-            break
-        start += step
-    return chunks
 
 
 @lru_cache(maxsize=1)

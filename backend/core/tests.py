@@ -7,31 +7,8 @@ Run with: python -m unittest core.tests -v
 import unittest
 from urllib.parse import urldefrag, urlparse
 
-from core.html_extract import extract_title_and_text
-
-# ---------------------------------------------------------------------------
-# Re-implement pure functions locally to avoid Django/pgvector import chain.
-# These mirror the logic in embeddings.py and scrape_acibadem.py exactly.
-# ---------------------------------------------------------------------------
-
-def chunk_text(text, chunk_size=700, chunk_overlap=120):
-    clean = " ".join((text or "").split())
-    if not clean:
-        return []
-    if chunk_overlap >= chunk_size:
-        raise ValueError("chunk_overlap must be smaller than chunk_size")
-    chunks = []
-    start = 0
-    step = chunk_size - chunk_overlap
-    while start < len(clean):
-        end = min(len(clean), start + chunk_size)
-        piece = clean[start:end].strip()
-        if piece:
-            chunks.append(piece)
-        if end >= len(clean):
-            break
-        start += step
-    return chunks
+from core.chunking import chunk_text, chunks_for_embedding
+from core.html_extract import extract_title_and_text, extract_title_text_and_embedding_units
 
 
 ALLOWED_NETLOCS = frozenset({"acibadem.edu.tr"})
@@ -210,6 +187,55 @@ class SameSiteTests(unittest.TestCase):
 
     def test_empty_string(self):
         self.assertFalse(same_site(""))
+
+
+class ExtractTitleTextAndEmbeddingUnitsTests(unittest.TestCase):
+    """DOM-derived embedding units (staff-style tables and lists)."""
+
+    def test_table_rows_become_units(self):
+        html = """<html><body><main><table>
+<tr><th>Name</th><th>Role</th></tr>
+<tr><td>Ata Akin</td><td>Dean</td></tr>
+<tr><td>Jane Doe</td><td>Head of Department</td></tr>
+</table></main></body></html>"""
+        title, text, units = extract_title_text_and_embedding_units(html)
+        self.assertGreaterEqual(len(units), 2)
+        self.assertTrue(any("Ata Akin" in u and "Dean" in u for u in units))
+        self.assertTrue(any("Jane Doe" in u for u in units))
+        self.assertIn("Ata Akin", text)
+
+    def test_top_level_list_items(self):
+        html = """<html><body><main><ul>
+<li>Alpha Role — Person One</li>
+<li>Beta Role — Person Two</li>
+</ul></main></body></html>"""
+        _title, _text, units = extract_title_text_and_embedding_units(html)
+        self.assertEqual(len(units), 2)
+        self.assertIn("Person One", units[0])
+
+
+class ChunksForEmbeddingTests(unittest.TestCase):
+    """Entity-aware chunking vs. hierarchical fallback."""
+
+    def test_structural_units_one_chunk_per_short_row(self):
+        content = "Staff\n\nAta Akin\nDean\n\nJane Doe\nHead"
+        units = ["Ata Akin\nDean", "Jane Doe\nHead"]
+        chunks = chunks_for_embedding(content, units, chunk_size=700, chunk_overlap=120)
+        self.assertEqual(len(chunks), 2)
+        self.assertIn("Ata Akin", chunks[0])
+
+    def test_fallback_when_units_too_sparse(self):
+        long_intro = "Lorem ipsum " * 200
+        content = long_intro + "\n\nOnly tiny list tail."
+        units = ["nav item"]
+        chunks = chunks_for_embedding(content, units, chunk_size=200, chunk_overlap=40)
+        self.assertGreater(len(chunks), 1)
+
+    def test_oversized_unit_splits_without_full_whitespace_collapse(self):
+        line = "Title: " + ("word " * 80)
+        units = [line]
+        chunks = chunks_for_embedding("x", units, chunk_size=120, chunk_overlap=20)
+        self.assertGreaterEqual(len(chunks), 1)
 
 
 class ExtractTitleAndTextTests(unittest.TestCase):

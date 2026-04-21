@@ -1,7 +1,8 @@
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
-from core.embeddings import chunk_text, embed_texts
+from core.chunking import chunks_for_embedding
+from core.embeddings import embed_texts
 from core.models import DocumentChunk, Page
 
 
@@ -34,7 +35,12 @@ class Command(BaseCommand):
         total_chunks = 0
 
         for page in queryset:
-            chunks = chunk_text(page.content, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+            chunks = chunks_for_embedding(
+                page.content,
+                page.embedding_units,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+            )
             if not chunks:
                 continue
 

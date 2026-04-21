@@ -88,7 +88,9 @@ class Command(BaseCommand):
 
             for url in urls:
                 try:
-                    title, text = fetch_page_extract(driver, url, delay)
+                    title, text, embedding_units = fetch_page_extract(
+                        driver, url, delay
+                    )
                 except Exception as exc:
                     failed += 1
                     logger.warning("Failed to fetch %s: %s", url, exc)
@@ -108,6 +110,7 @@ class Command(BaseCommand):
                         defaults={
                             "title": title,
                             "content": text,
+                            "embedding_units": embedding_units or None,
                             "source": SOURCE_LABEL,
                         },
                     )
