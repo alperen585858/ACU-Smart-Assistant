@@ -33,3 +33,7 @@ RAG_STEM_NOISE_URL_PENALTY = float(os.environ.get("RAG_STEM_NOISE_URL_PENALTY", 
 # Cross-encoder reranking (semantic rerank after vector retrieval)
 RAG_CROSS_ENCODER_RERANK = _env_bool("RAG_CROSS_ENCODER_RERANK", "true")
 RAG_CROSS_ENCODER_WEIGHT = float(os.environ.get("RAG_CROSS_ENCODER_WEIGHT", "0.4"))
+
+# Asymmetric retrieval: "Who is {name}?" / "{name} kimdir" — add role-phrase vectors + name icontains boost (no re-embed of corpus)
+RAG_WHOIS_QUERY_EXPAND = _env_bool("RAG_WHOIS_QUERY_EXPAND", "true")
+RAG_WHOIS_EXTRA_EMBEDS = max(0, min(4, int(os.environ.get("RAG_WHOIS_EXTRA_EMBEDS", "3"))))

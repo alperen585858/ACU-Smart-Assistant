@@ -9,6 +9,12 @@ from urllib.parse import urldefrag, urlparse
 
 from core.chunking import chunk_text, chunks_for_embedding
 from core.html_extract import extract_title_and_text, extract_title_text_and_embedding_units
+from core.rag_query_expand import (
+    snippet_around_phrase,
+    whois_name_from_queries,
+    whois_name_in_content,
+    whois_vector_variants,
+)
 
 
 ALLOWED_NETLOCS = frozenset({"acibadem.edu.tr"})
@@ -331,6 +337,73 @@ class NormalizeObsUrlTests(unittest.TestCase):
             base,
         )
         self.assertNotIn("#", u)
+
+
+class TestRagQueryExpand(unittest.TestCase):
+    """Asymmetric person-name query expansion (no Django)."""
+
+    def test_whois_english_name(self):
+        self.assertEqual(
+            whois_name_from_queries("Who is Ahmet Bulut?", None),
+            "Ahmet Bulut",
+        )
+        self.assertEqual(
+            whois_name_from_queries("Please tell me who is Ahmet Bulut", ""),
+            "Ahmet Bulut",
+        )
+
+    def test_kimdir_turkish(self):
+        self.assertEqual(
+            whois_name_from_queries("Ahmet Bulut kimdir", None),
+            "Ahmet Bulut",
+        )
+        self.assertEqual(
+            whois_name_from_queries("kimdir Ahmet Bulut", None),
+            "Ahmet Bulut",
+        )
+
+    def test_not_role_only_query(self):
+        self.assertIsNone(
+            whois_name_from_queries("head of computer engineering at ACU", None)
+        )
+
+    def test_whois_uses_raw_when_composed_has_acu_suffix(self):
+        """RAG composes a long string; name regex must not break on the appended university line."""
+        raw = "who is Ahmet bulut"
+        composed = (
+            f"{raw}\n"
+            "Acıbadem Mehmet Ali Aydınlar University (ACU)"
+        )
+        self.assertEqual(
+            whois_name_from_queries(composed, raw),
+            "Ahmet bulut",
+        )
+
+    def test_whois_vector_variants(self):
+        v = whois_vector_variants("Ahmet Bulut", max_variants=2)
+        self.assertEqual(len(v), 2)
+        self.assertIn("head of department", v[0].lower())
+        self.assertIn("ahmet", v[0].lower())
+
+    def test_snippet_around_phrase_centers_name(self):
+        long_pre = "x" * 1200
+        name = "Mahsa Ziraksima"
+        long_post = " y" * 200
+        blob = f"{long_pre} {name} is faculty.{long_post}"
+        sn = snippet_around_phrase(blob, name, max_len=400)
+        self.assertIn(name, sn)
+        self.assertNotEqual(sn, blob[:400])
+
+    def test_whois_name_in_content_tokenwise(self):
+        self.assertTrue(
+            whois_name_in_content("Committee: Mahsa A. Ziraksima (member)", "mahsa ziraksima")
+        )
+        self.assertTrue(whois_name_in_content("M. Ziraksima and Mahsa", "mahsa ziraksima"))
+
+    def test_whois_folds_turkish_surname(self):
+        self.assertTrue(
+            whois_name_in_content("Öğr. Gör. Dr. Mahsa Zıraksıma Akreditasyon", "mahsa ziraksima")
+        )
 
 
 if __name__ == "__main__":

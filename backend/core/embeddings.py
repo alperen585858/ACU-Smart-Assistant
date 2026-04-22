@@ -3,16 +3,15 @@ import logging
 import os
 import threading
 from collections import OrderedDict
-from functools import lru_cache
 
 from sentence_transformers import SentenceTransformer
-
-from core.chunking import chunk_text
 
 logger = logging.getLogger("core.embeddings")
 
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 _EMBEDDING_LOAD_FAILED = False
+_embedding_model: SentenceTransformer | None = None
+_embedding_model_lock = threading.Lock()
 
 # ── Embedding cache ──────────────────────────────────────────────────────
 _EMBED_CACHE_MAX = int(os.environ.get("EMBED_CACHE_MAX", "512"))
@@ -24,19 +23,33 @@ def _cache_key(text: str) -> str:
     return hashlib.md5(text.encode("utf-8")).hexdigest()
 
 
-@lru_cache(maxsize=1)
 def get_embedding_model() -> SentenceTransformer:
-    global _EMBEDDING_LOAD_FAILED
+    """
+    Load once, thread-safe. Prevents concurrent SentenceTransformer() races (meta tensor
+    / NotImplementedError on PyTorch 2.2+). Disables low_cpu_mem default meta init path.
+    """
+    global _embedding_model, _EMBEDDING_LOAD_FAILED
     if _EMBEDDING_LOAD_FAILED:
         raise RuntimeError("Embedding model is unavailable in this environment.")
-    model_name = os.environ.get("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
-    try:
-        model = SentenceTransformer(model_name)
-        logger.info("Embedding model loaded: %s", model_name)
-        return model
-    except Exception:
-        _EMBEDDING_LOAD_FAILED = True
-        raise
+    if _embedding_model is not None:
+        return _embedding_model
+    with _embedding_model_lock:
+        if _embedding_model is not None:
+            return _embedding_model
+        model_name = os.environ.get("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
+        try:
+            # See huggingface/sentence-transformers#3396 — avoid default meta-device load + .to(cpu) failure
+            model = SentenceTransformer(
+                model_name,
+                device="cpu",
+                model_kwargs={"low_cpu_mem_usage": False},
+            )
+            _embedding_model = model
+            logger.info("Embedding model loaded: %s", model_name)
+            return _embedding_model
+        except Exception:
+            _EMBEDDING_LOAD_FAILED = True
+            raise
 
 
 def embed_texts(texts: list[str]) -> list[list[float]]:
@@ -106,7 +119,10 @@ def get_reranker():
             return _reranker_instance
         try:
             from sentence_transformers import CrossEncoder
-            _reranker_instance = CrossEncoder(_RERANKER_MODEL_NAME)
+            _reranker_instance = CrossEncoder(
+                _RERANKER_MODEL_NAME,
+                model_kwargs={"low_cpu_mem_usage": False},
+            )
             logger.info("Reranker model loaded: %s", _RERANKER_MODEL_NAME)
             return _reranker_instance
         except Exception:

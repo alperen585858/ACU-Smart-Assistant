@@ -32,6 +32,8 @@ from core.rag_config import (
     RAG_TOP_K,
     RAG_VECTOR_CANDIDATE_POOL,
     RAG_VECTOR_FILL_EXTRA,
+    RAG_WHOIS_EXTRA_EMBEDS,
+    RAG_WHOIS_QUERY_EXPAND,
 )
 from core.rag_keywords import (
     RAG_STEM_OR_ENGINEERING_INTENT_RE,
@@ -39,8 +41,35 @@ from core.rag_keywords import (
     stem_engineering_boost_terms,
     structured_list_boost_terms,
 )
+from core.rag_query_expand import (
+    snippet_around_phrase,
+    whois_name_in_content,
+    whois_name_from_queries,
+    whois_vector_variants,
+)
 
 logger = logging.getLogger("core.rag")
+
+
+def _load_whois_name_chunks(anchor: str, out_limit: int, scan_limit: int = 200) -> list[DocumentChunk]:
+    """
+    Rows mentioning this person, using first-name (or only token) as a DB filter, then
+    whois_name_in_content (Turkish/Latin fold) in Python. This catches 'Ziraksima' query
+    vs 'Zıraksıma' in HTML where SQL AND on ASCII tokens fails.
+    """
+    a = (anchor or "").strip()
+    if not a or out_limit < 1:
+        return []
+    parts = [p for p in a.split() if len(p) >= 2]
+    if not parts:
+        return list(DocumentChunk.objects.filter(content__icontains=a)[:out_limit])
+    out: list[DocumentChunk] = []
+    for ch in DocumentChunk.objects.filter(content__icontains=parts[0])[:scan_limit]:
+        if whois_name_in_content(str(ch.content or ""), anchor):
+            out.append(ch)
+        if len(out) >= out_limit:
+            break
+    return out
 
 
 _pg_trgm_cache: bool | None = None
@@ -277,17 +306,23 @@ def _embedding_variants(composed: str, raw_user: str | None) -> list[str]:
     variants: list[str] = []
     if composed:
         variants.append(composed)
-    if not RAG_MULTI_EMBED:
-        return variants
-    raw = (raw_user or "").strip()
-    if raw and raw.casefold() != composed.casefold():
-        variants.append(raw)
-    if RAG_MULTI_EMBED_KEYWORD_LINE:
-        kw = rag_keywords_from_query(composed)
-        if kw:
-            line = " ".join(kw) + " Acibadem Mehmet Ali Aydinlar University"
-            if line.casefold() not in {v.casefold() for v in variants}:
-                variants.append(line)
+    if RAG_MULTI_EMBED:
+        raw = (raw_user or "").strip()
+        if raw and raw.casefold() != composed.casefold():
+            variants.append(raw)
+        if RAG_MULTI_EMBED_KEYWORD_LINE:
+            kw = rag_keywords_from_query(composed)
+            if kw:
+                line = " ".join(kw) + " Acibadem Mehmet Ali Aydinlar University"
+                if line.casefold() not in {v.casefold() for v in variants}:
+                    variants.append(line)
+    # "Who is X?" / "X kimdir" — extra vectors to match faculty/head pages (independent of RAG_MULTI_EMBED)
+    if RAG_WHOIS_QUERY_EXPAND:
+        wn = whois_name_from_queries(composed, raw_user)
+        if wn:
+            for line in whois_vector_variants(wn, RAG_WHOIS_EXTRA_EMBEDS):
+                if line.casefold() not in {v.casefold() for v in variants}:
+                    variants.append(line)
     # Dedupe preserving order
     seen: set[str] = set()
     out: list[str] = []
@@ -423,6 +458,12 @@ def search_document_chunks(
     if not composed_query:
         return "", [], False, True
 
+    whois_anchor: str | None = None
+    if RAG_WHOIS_QUERY_EXPAND:
+        _wn = whois_name_from_queries(composed_query, raw_user_query)
+        if _wn and len(_wn) >= 8:
+            whois_anchor = _wn
+
     variants = _embedding_variants(composed_query, raw_user_query)
     try:
         t_emb = time.time()
@@ -496,7 +537,12 @@ def search_document_chunks(
             seen_pk.add(pk)
             ranked.append((ch, nominal))
 
+    whois_chunks: list[DocumentChunk] = []
     t_kw = time.time()
+    if has_rows and whois_anchor:
+        whois_chunks = _load_whois_name_chunks(whois_anchor, 20)
+        for ch in whois_chunks[:8]:
+            push_kw(ch, 0.59)
     if RAG_KEYWORD_BOOST and has_rows:
         stem_terms = stem_engineering_boost_terms(composed_query)
         if stem_terms:
@@ -528,6 +574,18 @@ def search_document_chunks(
                 push_kw(ch, 0.72)
     logger.info("RAG keyword boost: %.2fs", time.time() - t_kw)
 
+    # Who-is: any chunk that literally contains the person name must compete in the pool,
+    # even if the primary query vector scored it poorly (asymmetric retrieval).
+    if has_rows and whois_anchor and whois_chunks:
+        have_pk = {ch.pk for ch, _ in ranked}
+        prepend: list[tuple[DocumentChunk, float]] = []
+        for ch in whois_chunks:
+            if ch.pk not in have_pk:
+                prepend.append((ch, 0.1))
+                have_pk.add(ch.pk)
+        if prepend:
+            ranked = prepend + ranked
+
     primary_vec = vectors[0]
     ranked_pks = [ch.pk for ch, _ in ranked]
 
@@ -541,6 +599,8 @@ def search_document_chunks(
             d += _stem_noise_penalty(
                 str(ch.source_url or ""), str(ch.page_title or "")
             )
+        if whois_anchor and whois_name_in_content(str(ch.content or ""), whois_anchor):
+            d = min(d, 0.08)
         return d
 
     ranked.sort(key=lambda it: (_effective_sort_distance(it[0], it[1]), it[0].pk))
@@ -561,7 +621,11 @@ def search_document_chunks(
         u = str(ch.source_url or "")
         if url_counts.get(u, 0) >= RAG_MAX_CHUNKS_PER_URL:
             return
-        snippet = str(ch.content or "")[:RAG_SNIPPET_CHARS]
+        raw = str(ch.content or "")
+        if whois_anchor and whois_name_in_content(raw, whois_anchor):
+            snippet = snippet_around_phrase(raw, whois_anchor, RAG_SNIPPET_CHARS)
+        else:
+            snippet = raw[:RAG_SNIPPET_CHARS]
         if total + len(snippet) > RAG_MAX_CHARS:
             return
         title = str(ch.page_title or ch.source_url or "")
