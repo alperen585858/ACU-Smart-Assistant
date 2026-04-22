@@ -25,6 +25,8 @@ DEFAULT_SEEDS = (
     "https://www.acibadem.edu.tr/en/academic/undergraduate-programs/faculty-of-engineering-and-natural-sciences/departments/computer-engineering/about",
     "https://www.acibadem.edu.tr/en/academic/undergraduate-programs/faculty-of-engineering-and-natural-sciences/departments/computer-engineering/academic-staff",
     "https://www.acibadem.edu.tr/en/academic/undergraduate-programs/faculty-of-engineering-and-natural-sciences/departments/computer-engineering/commissions",
+    # Rector, vice-rectors, deans, senate (tables; English /en path).
+    "https://www.acibadem.edu.tr/en/university/instructors-handbook/university-structure-and-management/university-management",
 )
 ALLOWED_NETLOCS = frozenset(
     {
@@ -136,6 +138,21 @@ class Command(BaseCommand):
             action="store_true",
             help="Allow crawling non-English paths (disabled by default).",
         )
+        parser.add_argument(
+            "--url",
+            action="append",
+            default=None,
+            metavar="URL",
+            help=(
+                "Fetch only this URL (repeat for multiple). "
+                "When set, built-in DEFAULT_SEEDS are skipped unless --with-default-seeds is used."
+            ),
+        )
+        parser.add_argument(
+            "--with-default-seeds",
+            action="store_true",
+            help="With --url, also fetch the normal DEFAULT_SEEDS list.",
+        )
 
     def handle(self, *args, **options):
         # Django provides these dynamically at runtime, but type checkers often
@@ -179,7 +196,14 @@ class Command(BaseCommand):
                 )
             )
 
-        seeds = [normalize_url(u, english_only=english_only) for u in DEFAULT_SEEDS]
+        extra_urls: list[str] = list(options.get("url") or []) if options.get("url") else []
+        if extra_urls:
+            raw = list(extra_urls)
+            if options.get("with_default_seeds"):
+                raw = list(DEFAULT_SEEDS) + raw
+        else:
+            raw = list(DEFAULT_SEEDS)
+        seeds = [normalize_url(u, english_only=english_only) for u in raw]
         seeds = [u for u in seeds if u]
         if not seeds:
             self.stderr.write(style.ERROR("No valid seed URLs."))

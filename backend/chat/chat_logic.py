@@ -24,7 +24,11 @@ def _ollama_rag_options(user_llm: str, rag_meta: dict) -> dict | None:
     than the global defaults; otherwise the model may answer with generic smalltalk.
     """
     u = user_llm or ""
-    if "faculty listing" not in u and (rag_meta.get("context_chars_sent") or 0) < 4000:
+    if (
+        "faculty listing" not in u
+        and "deans, rector, boards" not in u
+        and (rag_meta.get("context_chars_sent") or 0) < 4000
+    ):
         return None
     return {
         "num_ctx": max(OLLAMA_NUM_CTX, 12288),

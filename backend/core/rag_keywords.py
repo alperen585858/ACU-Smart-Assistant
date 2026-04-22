@@ -64,6 +64,24 @@ def faculty_roster_path_filter(query: str) -> str | None:
     return None
 
 
+# Deans, rector, university leadership (not the same as “teachers / academic staff list”).
+RAG_LEADERSHIP_INTENT_RE = re.compile(
+    r"\b(dean|deans|dekan|rector|rektör|rectorate|dekanlık|dekanlik|provost)\b",
+    re.IGNORECASE,
+)
+
+
+def leadership_embedding_phrase(query: str) -> str | None:
+    """Steer retrieval toward pages that name deans/rector/faculty leadership, not generic contact."""
+    q = f"{query or ''}".strip()
+    if not q or not RAG_LEADERSHIP_INTENT_RE.search(q):
+        return None
+    return (
+        "Acıbadem Mehmet Ali Aydınlar University faculty deans rector leadership "
+        "organization schools management board vice rector"
+    )
+
+
 def faculty_list_embedding_phrase(query: str) -> str | None:
     """Extra embedding line so vector search hits /academic-staff/ pages (not generic /about)."""
     q = f"{query or ''}".strip()

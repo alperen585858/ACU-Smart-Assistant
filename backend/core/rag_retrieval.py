@@ -37,9 +37,11 @@ from core.rag_config import (
 )
 from core.rag_keywords import (
     RAG_FACULTY_ROSTER_INTENT_RE,
+    RAG_LEADERSHIP_INTENT_RE,
     RAG_STEM_OR_ENGINEERING_INTENT_RE,
     faculty_list_embedding_phrase,
     faculty_roster_path_filter,
+    leadership_embedding_phrase,
     rag_keywords_from_query,
     stem_engineering_boost_terms,
     structured_list_boost_terms,
@@ -118,6 +120,11 @@ _DEPT_LEADER_CONTENT_RE = re.compile(
     r"bölüm başkanı|bolum baskan|dekan|müdür",
     re.IGNORECASE,
 )
+_LEADERSHIP_CONTENT_RE = re.compile(
+    r"dean\s+of|faculty\s+dean|\bdean\b|dekan|rector|rektör|dean'?s?\s+office|dekanlık|"
+    r"vice\s*rector|yardımcı\s*rektör|fakülte|faculty\s+of",
+    re.IGNORECASE,
+)
 _DEPT_NAMES: list[tuple[str, str]] = [
     ("computer engineering", "bilgisayar mühendisliği"),
     ("electrical", "elektrik"),
@@ -139,6 +146,9 @@ def _intent_boost(composed_query: str, url: str, title: str, content: str) -> in
     q = (composed_query or "").lower()
     blob = f"{url or ''} {title or ''} {content or ''}".lower()
     boost = 0
+    if RAG_LEADERSHIP_INTENT_RE.search(q):
+        if _LEADERSHIP_CONTENT_RE.search(blob):
+            boost += 14
     if _DEPT_LEADER_QUERY_RE.search(q):
         if _DEPT_LEADER_CONTENT_RE.search(blob):
             boost += 8
@@ -331,6 +341,9 @@ def _embedding_variants(composed: str, raw_user: str | None) -> list[str]:
     fl_phrase = faculty_list_embedding_phrase(fl_blob)
     if fl_phrase and fl_phrase.casefold() not in {v.casefold() for v in variants}:
         variants.append(fl_phrase)
+    lead_phrase = leadership_embedding_phrase(fl_blob)
+    if lead_phrase and lead_phrase.casefold() not in {v.casefold() for v in variants}:
+        variants.append(lead_phrase)
     # Dedupe preserving order
     seen: set[str] = set()
     out: list[str] = []
@@ -572,6 +585,21 @@ def search_document_chunks(
                 faculty_roster_pks.add(int(ch.pk))
                 push_kw(ch, 0.12)
 
+    if has_rows and RAG_LEADERSHIP_INTENT_RE.search(q_blob):
+        q_ld = (
+            Q(content__icontains="Dean of")
+            | Q(content__icontains="Faculty of")
+            | Q(page_title__icontains="dean")
+            | Q(page_title__icontains="Dekan")
+            | Q(content__icontains="Dekan")
+            | Q(content__icontains="rector")
+            | Q(content__icontains="Rektör")
+            | Q(content__icontains="Rektor")
+            | Q(content__icontains="Fakülte")
+        )
+        for ch in DocumentChunk.objects.filter(q_ld)[:22]:
+            push_kw(ch, 0.2)
+
     if RAG_KEYWORD_BOOST and has_rows:
         stem_terms = stem_engineering_boost_terms(composed_query)
         if stem_terms:
@@ -671,6 +699,33 @@ def search_document_chunks(
                 f"{body[:cap]}"
             )
 
+    # Official rector + deans + boards (English "University Management" page). Vector search
+    # often returns irrelevant news; inject the authoritative page for generic leadership questions.
+    mgmt_block = ""
+    mgmt_url: str = ""
+    mgmt_title = ""
+    if RAG_LEADERSHIP_INTENT_RE.search(q_blob) and not whois_anchor:
+        dept_teacher_list = bool(
+            RAG_FACULTY_ROSTER_INTENT_RE.search(q_blob) and faculty_path_for_inject
+        )
+        if not dept_teacher_list:
+            um = (
+                Page.objects.filter(
+                    Q(url__icontains="university-management")
+                    & Q(url__icontains="instructors-handbook")
+                )
+                .only("url", "title", "content")
+                .first()
+            )
+            if um and (um.content or "").strip():
+                body_um = (um.content or "").strip()
+                mgmt_title = (um.title or "")[:200]
+                mgmt_url = str(um.url)
+                mgmt_block = (
+                    f"[{um.title} — deans, rector, boards; use only this list for names and titles]\n"
+                    f"{body_um[:12000]}"
+                )
+
     # Full academic-staff page + "list all teachers" query: do not mix other URLs (news, other
     # departments, site-wide "Akademik" pages)—the model otherwise blends unrelated names.
     faculty_inject_only = bool(
@@ -693,6 +748,20 @@ def search_document_chunks(
             len(inject_block or ""),
         )
         return inject_block, src, used_relaxed, True
+
+    if mgmt_block and mgmt_url:
+        src_mgmt = [
+            {
+                "url": mgmt_url,
+                "title": mgmt_title,
+                "cosine_distance": 0.0,
+            }
+        ]
+        logger.info(
+            "RAG leadership university-management inject-only (chars=%d)",
+            len(mgmt_block),
+        )
+        return mgmt_block, src_mgmt, used_relaxed, True
 
     max_context_chars = (
         max(RAG_MAX_CHARS, 9000) if inject_block else RAG_MAX_CHARS

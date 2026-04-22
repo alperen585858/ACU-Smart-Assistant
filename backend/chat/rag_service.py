@@ -4,6 +4,7 @@ import re
 from core.rag_keywords import (
     RAG_DEPT_OR_FACULTY_INTENT_RE,
     RAG_FACULTY_ROSTER_INTENT_RE,
+    RAG_LEADERSHIP_INTENT_RE,
     RAG_STEM_OR_ENGINEERING_INTENT_RE,
     faculty_roster_path_filter,
 )
@@ -209,6 +210,11 @@ def compose_rag_search_query(current_message: str, prior_user_messages: list[str
             "department academic staff page faculty members professors "
             "instructors by name and title"
         )
+    elif RAG_LEADERSHIP_INTENT_RE.search(merged):
+        merged = (
+            f"{merged}\n"
+            "Acıbadem faculty deans rector leadership organization schools management board"
+        )
     elif RAG_STEM_OR_ENGINEERING_INTENT_RE.search(cur):
         merged = (
             f"{merged}\nComputer Engineering undergraduate "
@@ -344,6 +350,13 @@ def prepare_chat_prompts(rag_query: str, user_plain: str) -> tuple[str, str, dic
                 "\n\nThe user asks for departments/faculties/schools. Extract and list every distinct "
                 "faculty, school, or department name that appears in the excerpts; if incomplete, "
                 "still list what is present."
+            )
+        if RAG_LEADERSHIP_INTENT_RE.search(user_plain):
+            system += (
+                "\n\nThe user asks about deans, rector, or top academic leadership. "
+                "Name any deans, rectors, or vice-rectors explicitly stated in the excerpts; "
+                "if an excerpt only gives a dean’s office, email, or phone, say that — do not claim "
+                "the university does not mention leadership unless the excerpts truly have no such terms."
             )
         if RAG_STEM_OR_ENGINEERING_INTENT_RE.search(user_plain):
             system += (
