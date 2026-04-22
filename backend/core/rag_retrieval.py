@@ -36,7 +36,10 @@ from core.rag_config import (
     RAG_WHOIS_QUERY_EXPAND,
 )
 from core.rag_keywords import (
+    RAG_FACULTY_ROSTER_INTENT_RE,
     RAG_STEM_OR_ENGINEERING_INTENT_RE,
+    faculty_list_embedding_phrase,
+    faculty_roster_path_filter,
     rag_keywords_from_query,
     stem_engineering_boost_terms,
     structured_list_boost_terms,
@@ -323,6 +326,11 @@ def _embedding_variants(composed: str, raw_user: str | None) -> list[str]:
             for line in whois_vector_variants(wn, RAG_WHOIS_EXTRA_EMBEDS):
                 if line.casefold() not in {v.casefold() for v in variants}:
                     variants.append(line)
+    # Department faculty roster: steer embeddings toward .../academic-staff/ (not /about, /news, …).
+    fl_blob = f"{composed} {raw_user or ''}".strip()
+    fl_phrase = faculty_list_embedding_phrase(fl_blob)
+    if fl_phrase and fl_phrase.casefold() not in {v.casefold() for v in variants}:
+        variants.append(fl_phrase)
     # Dedupe preserving order
     seen: set[str] = set()
     out: list[str] = []
@@ -508,7 +516,11 @@ def search_document_chunks(
         merged_order.append((ch, d))
 
     candidate_slice = merged_order[:per_pool]
-    stem_intent = bool(RAG_STEM_OR_ENGINEERING_INTENT_RE.search(composed_query))
+    stem_intent = bool(
+        RAG_STEM_OR_ENGINEERING_INTENT_RE.search(
+            f"{composed_query} {raw_user_query or ''}"
+        )
+    )
 
     t_rerank = time.time()
     reranked = _rerank_items(
@@ -539,10 +551,27 @@ def search_document_chunks(
 
     whois_chunks: list[DocumentChunk] = []
     t_kw = time.time()
+    faculty_roster_pks: set[int] = set()
+    faculty_path_for_inject: str | None = None
     if has_rows and whois_anchor:
         whois_chunks = _load_whois_name_chunks(whois_anchor, 20)
         for ch in whois_chunks[:8]:
             push_kw(ch, 0.59)
+
+    q_blob = f"{composed_query} {raw_user_query or ''}"
+    if has_rows and RAG_FACULTY_ROSTER_INTENT_RE.search(q_blob):
+        path_seg = faculty_roster_path_filter(q_blob)
+        if path_seg:
+            faculty_path_for_inject = path_seg
+            for ch in (
+                DocumentChunk.objects.filter(
+                    Q(source_url__icontains="academic-staff")
+                    & Q(source_url__icontains=path_seg)
+                )[:20]
+            ):
+                faculty_roster_pks.add(int(ch.pk))
+                push_kw(ch, 0.12)
+
     if RAG_KEYWORD_BOOST and has_rows:
         stem_terms = stem_engineering_boost_terms(composed_query)
         if stem_terms:
@@ -586,6 +615,18 @@ def search_document_chunks(
         if prepend:
             ranked = prepend + ranked
 
+    if has_rows and faculty_roster_pks:
+        have_pk = {c.pk for c, _ in ranked}
+        fr_pre: list[tuple[DocumentChunk, float]] = []
+        for ch in DocumentChunk.objects.filter(pk__in=faculty_roster_pks).order_by(
+            "pk"
+        ):
+            if ch.pk not in have_pk:
+                fr_pre.append((ch, 0.1))
+                have_pk.add(ch.pk)
+        if fr_pre:
+            ranked = fr_pre + ranked
+
     primary_vec = vectors[0]
     ranked_pks = [ch.pk for ch, _ in ranked]
 
@@ -601,9 +642,61 @@ def search_document_chunks(
             )
         if whois_anchor and whois_name_in_content(str(ch.content or ""), whois_anchor):
             d = min(d, 0.08)
+        if int(ch.pk) in faculty_roster_pks:
+            d = min(d, 0.12)
         return d
 
     ranked.sort(key=lambda it: (_effective_sort_distance(it[0], it[1]), it[0].pk))
+
+    # Full Page row: embeddings/chunks can miss card-style names; inject raw HTML-stripped text.
+    inject_block = ""
+    inject_skip_url: str | None = None
+    inject_title = ""
+    if faculty_path_for_inject:
+        staff_page = (
+            Page.objects.filter(
+                Q(url__icontains="academic-staff")
+                & Q(url__icontains=faculty_path_for_inject)
+            )
+            .only("url", "title", "content")
+            .first()
+        )
+        if staff_page and (staff_page.content or "").strip():
+            body = (staff_page.content or "").strip()
+            inject_title = (staff_page.title or "")[:200]
+            inject_skip_url = str(staff_page.url)
+            cap = 10000
+            inject_block = (
+                f"[{staff_page.title} — faculty listing; name every person and title below]\n"
+                f"{body[:cap]}"
+            )
+
+    # Full academic-staff page + "list all teachers" query: do not mix other URLs (news, other
+    # departments, site-wide "Akademik" pages)—the model otherwise blends unrelated names.
+    faculty_inject_only = bool(
+        inject_block
+        and faculty_path_for_inject
+        and RAG_FACULTY_ROSTER_INTENT_RE.search(q_blob)
+        and not whois_anchor
+    )
+    if faculty_inject_only and inject_skip_url:
+        src = [
+            {
+                "url": inject_skip_url,
+                "title": inject_title,
+                "cosine_distance": 0.0,
+            }
+        ]
+        logger.info(
+            "RAG faculty inject-only context (path=%s, chars=%d)",
+            faculty_path_for_inject,
+            len(inject_block or ""),
+        )
+        return inject_block, src, used_relaxed, True
+
+    max_context_chars = (
+        max(RAG_MAX_CHARS, 9000) if inject_block else RAG_MAX_CHARS
+    )
 
     context_parts: list[str] = []
     sources: list[dict] = []
@@ -613,12 +706,14 @@ def search_document_chunks(
 
     def try_add_context_chunk(ch: DocumentChunk, nominal_dist: float) -> None:
         nonlocal total
-        if total >= RAG_MAX_CHARS:
+        if total >= max_context_chars:
             return
         cid = ch.pk
         if cid in seen_chunk_ids:
             return
         u = str(ch.source_url or "")
+        if inject_skip_url and u == inject_skip_url:
+            return
         if url_counts.get(u, 0) >= RAG_MAX_CHUNKS_PER_URL:
             return
         raw = str(ch.content or "")
@@ -626,7 +721,7 @@ def search_document_chunks(
             snippet = snippet_around_phrase(raw, whois_anchor, RAG_SNIPPET_CHARS)
         else:
             snippet = raw[:RAG_SNIPPET_CHARS]
-        if total + len(snippet) > RAG_MAX_CHARS:
+        if total + len(snippet) > max_context_chars:
             return
         title = str(ch.page_title or ch.source_url or "")
         context_parts.append(f"[{title}]\n{snippet}")
@@ -645,7 +740,7 @@ def search_document_chunks(
     for chunk, dist_val in ranked:
         try_add_context_chunk(chunk, dist_val)
 
-    if total < RAG_MAX_CHARS and RAG_VECTOR_FILL_EXTRA > 0:
+    if total < max_context_chars and RAG_VECTOR_FILL_EXTRA > 0:
         fill_slice = [
             (ch, d) for ch, d in reranked if ch.pk not in seen_chunk_ids
         ][:RAG_VECTOR_FILL_EXTRA]
@@ -658,8 +753,23 @@ def search_document_chunks(
         )
         for ch, d in fill_slice:
             try_add_context_chunk(ch, float(d))
-            if total >= RAG_MAX_CHARS:
+            if total >= max_context_chars:
                 break
 
+    out = "\n\n".join(context_parts)
+    if inject_block:
+        out = f"{inject_block}\n\n{out}" if out else inject_block
+        if inject_skip_url and not any(
+            str(s.get("url") or "") == inject_skip_url for s in sources
+        ):
+            sources.insert(
+                0,
+                {
+                    "url": inject_skip_url,
+                    "title": inject_title,
+                    "cosine_distance": 0.0,
+                },
+            )
+
     logger.info("RAG total: %.2fs, chunks=%d, chars=%d", time.time() - t0, len(sources), total)
-    return "\n\n".join(context_parts), sources, used_relaxed, True
+    return out, sources, used_relaxed, True

@@ -5,7 +5,7 @@ from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
 
 from .models import ChatMessage, ChatSession
-from .llm_service import call_llm
+from .llm_service import OLLAMA_NUM_CTX, OLLAMA_NUM_PREDICT, call_llm
 from .message_utils import parse_client_id, trim_last_user_for_llm, trim_message_for_llm
 from .rag_service import (
     RAG_META_REASON_SKIPPED_SMALLTALK,
@@ -16,6 +16,20 @@ from .rag_service import (
 )
 
 CHAT_HISTORY_MAX_MESSAGES = max(1, int(os.environ.get("CHAT_HISTORY_MAX_MESSAGES", "12")))
+
+
+def _ollama_rag_options(user_llm: str, rag_meta: dict) -> dict | None:
+    """
+    Long injected faculty pages + name lists need a larger context window and more output tokens
+    than the global defaults; otherwise the model may answer with generic smalltalk.
+    """
+    u = user_llm or ""
+    if "faculty listing" not in u and (rag_meta.get("context_chars_sent") or 0) < 4000:
+        return None
+    return {
+        "num_ctx": max(OLLAMA_NUM_CTX, 12288),
+        "num_predict": max(OLLAMA_NUM_PREDICT, 900),
+    }
 
 
 def run_chat_completion(body: dict) -> JsonResponse:
@@ -79,7 +93,8 @@ def run_chat_completion(body: dict) -> JsonResponse:
             {"role": "user", "content": trim_last_user_for_llm(user_llm, RAG_USER_BUBBLE_MAX_CHARS)},
         ]
 
-    reply_text, err = call_llm(ollama_messages)
+    ollama_opts = _ollama_rag_options(user_llm, rag_meta)
+    reply_text, err = call_llm(ollama_messages, ollama_options=ollama_opts)
     if err:
         status = 504 if "timeout" in err.lower() or "timed out" in err.lower() else 502
         return JsonResponse({"error": err, "rag": rag_meta}, status=status)
@@ -120,7 +135,8 @@ def _chat_with_db(body: dict, client_uuid: uuid.UUID) -> JsonResponse:
         session.save(update_fields=["title"])
         title_changed = True
 
-    reply_text, err = call_llm(ollama_messages)
+    ollama_opts = _ollama_rag_options(user_llm, rag_meta)
+    reply_text, err = call_llm(ollama_messages, ollama_options=ollama_opts)
     if err:
         user_row.delete()
         if title_changed:

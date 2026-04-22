@@ -3,7 +3,9 @@ import re
 
 from core.rag_keywords import (
     RAG_DEPT_OR_FACULTY_INTENT_RE,
+    RAG_FACULTY_ROSTER_INTENT_RE,
     RAG_STEM_OR_ENGINEERING_INTENT_RE,
+    faculty_roster_path_filter,
 )
 from core.rag_retrieval import search_document_chunks
 
@@ -198,6 +200,15 @@ def compose_rag_search_query(current_message: str, prior_user_messages: list[str
         re.IGNORECASE,
     ):
         merged = f"{merged}\npostal address campus location contact Istanbul Kerem Aydinlar"
+    elif RAG_FACULTY_ROSTER_INTENT_RE.search(merged) and (
+        RAG_STEM_OR_ENGINEERING_INTENT_RE.search(merged)
+        or faculty_roster_path_filter(merged)
+    ):
+        merged = (
+            f"{merged}\n"
+            "department academic staff page faculty members professors "
+            "instructors by name and title"
+        )
     elif RAG_STEM_OR_ENGINEERING_INTENT_RE.search(cur):
         merged = (
             f"{merged}\nComputer Engineering undergraduate "
@@ -339,6 +350,19 @@ def prepare_chat_prompts(rag_query: str, user_plain: str) -> tuple[str, str, dic
                 "\n\nThe user asked about a degree, engineering discipline, or program. If the excerpts "
                 "name that program in English or Turkish, answer from those lines only; say it is not "
                 "mentioned only if neither the English nor Turkish program name appears there."
+            )
+        if RAG_FACULTY_ROSTER_INTENT_RE.search(user_plain) and "faculty listing" in (
+            context or ""
+        ):
+            system += (
+                "\n\nMANDATORY (faculty list in Context): Answer with concrete names and titles from the "
+                "faculty listing block first. Do not reply with only generic offers such as ‘What would you "
+                "like to know?’ or a vague invitation to ask about the university. Do not ask follow-up "
+                "questions before you have given the list. If the listing block contains any person names, "
+                "you must enumerate them; only refuse if there are truly zero names in the Context. "
+                "Include only people who appear in that department’s staff list text. Do not add faculty "
+                "from Psychology, Biomedical, Medicine, or other units unless the staff list text itself "
+                "names them as part of the same department roster—do not invent or import names from memory."
             )
         user_llm = _wrap_user_with_rag_context(context, user_plain)
         _attach_llm_visibility_meta(meta, user_llm, len(context))

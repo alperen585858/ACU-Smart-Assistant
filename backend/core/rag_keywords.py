@@ -24,6 +24,60 @@ RAG_STEM_OR_ENGINEERING_INTENT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# "Who are the teachers?" / "faculty" — prefer department /academic-staff/ pages in RAG.
+RAG_FACULTY_ROSTER_INTENT_RE = re.compile(
+    r"\bteachers?\b|teaching\s+staff|"
+    r"\b(prof|faculty|professors?|instructors?|lecturers?)\b|"
+    r"öğretim|ogretim|akademik\s+kadro|eğitim\s+kadrosu|egitim\s+kadrosu|"
+    r"\bhocalar|ders\s+veren|educators?\b|academic\s+staff\b|"
+    r"kadro(ya)?\b",
+    re.IGNORECASE,
+)
+
+# Query substring → URL path segment under .../departments/<segment>/ (see site structure).
+_FACULTY_ROSTER_PATHS: list[tuple[tuple[str, ...], str]] = [
+    (
+        (
+            "computer engineering",
+            "bilgisayar mühendisliği",
+            "bilgisayar",
+            "mühendisliği bölüm",
+            "bolum bilgisayar",
+        ),
+        "computer-engineering",
+    ),
+    (("electrical", "elektrik", "elektronik", "electronics"), "electrical"),
+    (("mechanical", "makine"), "mechanical"),
+    (("civil", "inşaat", "insaat", "mimarlık inşaat"), "civil"),
+    (("industrial", "endüstri", "endustri"), "industrial"),
+    (("biomedical", "biyomedikal", "biyom"), "biomedical"),
+    (("software", "yazılım", "yazilim", "yazilim m"), "software"),
+]
+
+
+def faculty_roster_path_filter(query: str) -> str | None:
+    """URL segment e.g. computer-engineering, or None if no department match."""
+    ql = (query or "").lower()
+    for needles, path_seg in _FACULTY_ROSTER_PATHS:
+        if any(n in ql for n in needles):
+            return path_seg
+    return None
+
+
+def faculty_list_embedding_phrase(query: str) -> str | None:
+    """Extra embedding line so vector search hits /academic-staff/ pages (not generic /about)."""
+    q = f"{query or ''}".strip()
+    if not q or not RAG_FACULTY_ROSTER_INTENT_RE.search(q):
+        return None
+    if not RAG_STEM_OR_ENGINEERING_INTENT_RE.search(q) and not faculty_roster_path_filter(q):
+        return None
+    seg = faculty_roster_path_filter(q) or "engineering"
+    label = seg.replace("-", " ")
+    return (
+        f"Acıbadem University {label} department academic staff list faculty members "
+        f"professors and teaching staff"
+    )
+
 
 def rag_keywords_from_query(text: str, max_terms: int = 5) -> list[str]:
     raw = (text or "").lower()

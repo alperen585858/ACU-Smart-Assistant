@@ -26,6 +26,18 @@ class Command(BaseCommand):
             help="Skip OBS Bologna scrape step.",
         )
         parser.add_argument(
+            "--with-acibadem-js",
+            action="store_true",
+            default=True,
+            help="Re-fetch Drupal AJAX staff pages (headless Chrome; default: on).",
+        )
+        parser.add_argument(
+            "--without-acibadem-js",
+            action="store_false",
+            dest="with_acibadem_js",
+            help="Skip Selenium re-fetch of academic-staff and similar pages.",
+        )
+        parser.add_argument(
             "--obs-delay",
             type=float,
             default=1.5,
@@ -55,7 +67,7 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         if not options["keep_existing"]:
             self.stdout.write(
-                self.style.NOTICE("Step 0/3: Clearing existing RAG rows...")
+                self.style.NOTICE("Step 0/4: Clearing existing RAG rows...")
             )
             with transaction.atomic():
                 deleted_chunks, _ = DocumentChunk.objects.all().delete()
@@ -66,7 +78,7 @@ class Command(BaseCommand):
                 )
             )
 
-        self.stdout.write(self.style.NOTICE("Step 1/3: Scraping ACU pages..."))
+        self.stdout.write(self.style.NOTICE("Step 1/4: Scraping ACU pages..."))
         call_command(
             "scrape_acibadem",
             crawl=True,
@@ -76,8 +88,23 @@ class Command(BaseCommand):
             ignore_robots=options["ignore_robots"],
         )
 
+        if options["with_acibadem_js"]:
+            self.stdout.write(
+                self.style.NOTICE("Step 2/4: Re-fetching ACU JS pages (academic staff)…")
+            )
+            call_command(
+                "scrape_acibadem_js",
+                delay=options["delay"],
+            )
+        else:
+            self.stdout.write(
+                self.style.WARNING(
+                    "Step 2/4: Skipping ACU JS re-fetch (no headless staff lists)."
+                )
+            )
+
         if options["with_obs"]:
-            self.stdout.write(self.style.NOTICE("Step 2/3: Scraping OBS Bologna pages..."))
+            self.stdout.write(self.style.NOTICE("Step 3/4: Scraping OBS Bologna pages..."))
             obs_args = {
                 "delay": options["obs_delay"],
                 "lang": options["obs_lang"],
@@ -86,9 +113,11 @@ class Command(BaseCommand):
                 obs_args["max_programs"] = options["obs_max_programs"]
             call_command("scrape_obs_bologna", **obs_args)
         else:
-            self.stdout.write(self.style.WARNING("Step 2/3: Skipping OBS Bologna scrape (--without-obs)."))
+            self.stdout.write(
+                self.style.WARNING("Step 3/4: Skipping OBS Bologna scrape (--without-obs).")
+            )
 
-        self.stdout.write(self.style.NOTICE("Step 3/3: Building embeddings..."))
+        self.stdout.write(self.style.NOTICE("Step 4/4: Building embeddings..."))
         call_command(
             "build_page_embeddings",
             batch_size=options["batch_size"],

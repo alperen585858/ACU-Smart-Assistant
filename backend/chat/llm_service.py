@@ -12,8 +12,9 @@ logger = logging.getLogger("chat.llm")
 LLM_BACKEND = os.environ.get("LLM_BACKEND", "ollama")
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2:3b")
-OLLAMA_NUM_PREDICT = int(os.environ.get("OLLAMA_NUM_PREDICT", "200"))
-OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "4096"))
+# Long RAG prompts need a wide ctx; list-style answers need headroom (defaults align with docker-compose).
+OLLAMA_NUM_PREDICT = int(os.environ.get("OLLAMA_NUM_PREDICT", "512"))
+OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "8192"))
 OLLAMA_HTTP_TIMEOUT = int(os.environ.get("OLLAMA_HTTP_TIMEOUT", "240"))
 OLLAMA_KEEP_ALIVE = os.environ.get("OLLAMA_KEEP_ALIVE", "30m")
 OLLAMA_TEMPERATURE = float(os.environ.get("OLLAMA_TEMPERATURE", "0.15"))
@@ -94,19 +95,24 @@ def _call_claude(messages: list) -> tuple[str | None, str | None]:
     return reply, None
 
 
-def _call_ollama(ollama_messages: list) -> tuple[str | None, str | None]:
+def _call_ollama(
+    ollama_messages: list, options: dict | None = None
+) -> tuple[str | None, str | None]:
+    opt = {
+        "num_predict": OLLAMA_NUM_PREDICT,
+        "num_ctx": OLLAMA_NUM_CTX,
+        "temperature": OLLAMA_TEMPERATURE,
+        "top_p": OLLAMA_TOP_P,
+    }
+    if options:
+        opt.update({k: v for k, v in options.items() if v is not None})
     payload = json.dumps(
         {
             "model": OLLAMA_MODEL,
             "messages": ollama_messages,
             "stream": False,
             "keep_alive": OLLAMA_KEEP_ALIVE,
-            "options": {
-                "num_predict": OLLAMA_NUM_PREDICT,
-                "num_ctx": OLLAMA_NUM_CTX,
-                "temperature": OLLAMA_TEMPERATURE,
-                "top_p": OLLAMA_TOP_P,
-            },
+            "options": opt,
         }
     ).encode("utf-8")
     req = urllib.request.Request(
@@ -138,7 +144,9 @@ def _call_ollama(ollama_messages: list) -> tuple[str | None, str | None]:
     return reply, None
 
 
-def call_llm(messages: list) -> tuple[str | None, str | None]:
+def call_llm(
+    messages: list, *, ollama_options: dict | None = None
+) -> tuple[str | None, str | None]:
     backend = "claude" if (LLM_BACKEND == "claude" and ANTHROPIC_API_KEY) else "ollama"
     logger.info("LLM call: backend=%s, messages=%d", backend, len(messages))
     start = time.time()
@@ -146,7 +154,7 @@ def call_llm(messages: list) -> tuple[str | None, str | None]:
     if backend == "claude":
         reply, err = _call_claude(messages)
     else:
-        reply, err = _call_ollama(messages)
+        reply, err = _call_ollama(messages, options=ollama_options)
 
     elapsed = round(time.time() - start, 2)
     if err:

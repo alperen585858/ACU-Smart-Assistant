@@ -405,6 +405,28 @@ class TestRagQueryExpand(unittest.TestCase):
             whois_name_in_content("Öğr. Gör. Dr. Mahsa Zıraksıma Akreditasyon", "mahsa ziraksima")
         )
 
+    def test_acibadem_js_seed_urls_match_db_normalization(self):
+        from core.acibadem_js_scraper import ACIBADEM_JS_URLS
+
+        for u in ACIBADEM_JS_URLS:
+            n = normalize_url(u)
+            self.assertTrue(
+                n.startswith("https://acibadem.edu.tr/en/"),
+                msg=n,
+            )
+            self.assertIn("academic-staff", n)
+
+    def test_faculty_roster_path_filter(self):
+        from core.rag_keywords import faculty_list_embedding_phrase, faculty_roster_path_filter
+
+        self.assertEqual(
+            faculty_roster_path_filter("Who are the computer engineering teachers?"),
+            "computer-engineering",
+        )
+        self.assertIsNotNone(
+            faculty_list_embedding_phrase("list of computer engineering faculty members")
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
