@@ -1,4 +1,4 @@
-# pyright: reportMissingModuleSource=false
+2# pyright: reportMissingModuleSource=false
 """Fetch pages from acibadem.edu.tr into core.Page."""
 import time
 from collections import deque

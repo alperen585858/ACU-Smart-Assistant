@@ -1,0 +1,69 @@
+# main branch'e push -> CI basarili olunca VMware icindeki Ubuntu'ya SSH ile deploy.
+# (AWS/ECR gerekmez; herhangi bir erisilebilir Ubuntu sunucu IP'si + SSH ile calisir.)
+#
+# Zorunlu GitHub repository Secrets (Settings -> Secrets and variables -> Actions):
+#   DEPLOY_SSH_PRIVATE_KEY  — hedefe SSH ile baglanan private key (tam metin, -----BEGIN...END-----)
+#   DEPLOY_HOST             — IP veya hostname (ornek: 192.168.1.50 veya vm-ubuntu.lan)
+#   DEPLOY_USER             — ssh kullanici (ornek: ubuntu)
+#
+# Zorunlu GitHub variable (Settings -> Variables -> New repository variable):
+#   DEPLOY_PATH             — sunucudaki proje koku, git repo kok klasoru (ornek: /home/ubuntu/Project)
+#
+# Sunucuda bir kez: ayni repoyu git clone, .env + .env.production, public key ~/.ssh/authorized_keys
+# icinde bu key'e karsilik gelen public key, origin fetch icin deploy key veya https credential.
+
+name: Deploy Ubuntu (VMware / SSH)
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+concurrency:
+  group: deploy-vmware-ssh
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    if: |
+      github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'workflow_run'
+          && github.event.workflow_run.conclusion == 'success'
+          && github.event.workflow_run.event == 'push')
+
+    steps:
+      - name: Secret / variable kontrolu
+        env:
+          _H: ${{ secrets.DEPLOY_HOST }}
+          _U: ${{ secrets.DEPLOY_USER }}
+          _K: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+          _P: ${{ vars.DEPLOY_PATH }}
+        run: |
+          test -n "$_H" || { echo "::error::Secret DEPLOY_HOST eksik"; exit 1; }
+          test -n "$_U" || { echo "::error::Secret DEPLOY_USER eksik"; exit 1; }
+          test -n "$_K" || { echo "::error::Secret DEPLOY_SSH_PRIVATE_KEY eksik"; exit 1; }
+          test -n "$_P" || { echo "::error::Variable DEPLOY_PATH eksik (ornek: /home/ubuntu/Project)"; exit 1; }
+
+      - name: Git pull + docker compose (hedef sunucu)
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/vmware_deploy
+          chmod 600 ~/.ssh/vmware_deploy
+          ssh -i ~/.ssh/vmware_deploy -o StrictHostKeyChecking=accept-new \
+            '${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}' bash -s << 'REMOTE_EOF'
+          set -euo pipefail
+          cd '${{ vars.DEPLOY_PATH }}'
+          git fetch origin main
+          git reset --hard origin/main
+          docker compose -f docker-compose.prod.yml up -d --build
+          REMOTE_EOF
