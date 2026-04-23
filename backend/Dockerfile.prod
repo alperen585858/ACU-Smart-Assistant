@@ -23,7 +23,8 @@ RUN SECRET_KEY=build-only-not-for-runtime DEBUG=False DJANGO_WHITENOISE=1 \
 
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
+# start-period: ilk basta bos DB'de init_rag_if_empty uzun surebilir; guncel healthcheckten once gunicorn ayağa cikmaz
+HEALTHCHECK --interval=30s --timeout=5s --start-period=3600s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/')"
 
 ENTRYPOINT ["/docker-entrypoint.sh"]

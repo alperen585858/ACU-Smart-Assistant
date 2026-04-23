@@ -49,6 +49,8 @@ services:
       - .env.production
     environment:
       RUN_MIGRATIONS: ${RUN_MIGRATIONS:-0}
+      # 1: DB'de RAG yokken bir kez refresh_rag (sınırsız sayfa, HTTP-only; bkz. init_rag_if_empty)
+      AUTO_RAG_WHEN_EMPTY: ${AUTO_RAG_WHEN_EMPTY:-1}
       # POSTGRES_* kullanıcı/şifre/db adı: .env.production (db servisi ile aynı dosya)
       POSTGRES_HOST: ${POSTGRES_HOST:-db}
       POSTGRES_PORT: ${POSTGRES_PORT:-5432}
@@ -101,6 +103,8 @@ networks:
   acu_prod:
     driver: bridge
 
+# pgdata_prod: RAG (Page, DocumentChunk) + Django verisi; silinmedikce her deploy sonrasi da kalir.
+# ollama_data_prod: indirilen LLM imajlari.
 volumes:
   pgdata_prod:
   ollama_data_prod:

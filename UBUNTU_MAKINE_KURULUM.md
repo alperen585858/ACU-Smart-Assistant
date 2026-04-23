@@ -15,28 +15,30 @@ Detaylar için: [README.md](README.md), [DEPLOYMENT.md](DEPLOYMENT.md), [RAG_VER
 
 ---
 
-## 0. GitHub `main` → VMware Ubuntu otomatik deploy
+## 0. GitHub `main` → canlı (SSH deploy)
 
-Repository’de workflow: [`.github/workflows/deploy-vmware-ssh.yml`](.github/workflows/deploy-vmware-ssh.yml).
+Hedef: `main`’e push/merge → [CI](.github/workflows/ci.yml) **başarılı** olduktan sonra [deploy-vmware-ssh.yml](.github/workflows/deploy-vmware-ssh.yml) hedefe **SSH** ile girer, `git reset --hard origin/main` ve `docker compose -f docker-compose.prod.yml up -d --build` çalıştırır.
 
-- **Tetikleyici:** `main` branch’e **push** sonrası [CI](.github/workflows/ci.yml) **başarılı** olunca çalışır. İstersen manuel: GitHub **Actions** → **Deploy Ubuntu (VMware / SSH)** → **Run workflow**.
+**GitHub (Settings → Secrets and variables → Actions):**
 
-**Repository ayarları (Settings → Secrets and variables → Actions):**
+| Tip | Ad | Açıklama |
+|-----|-----|----------|
+| Secret | `DEPLOY_SSH_PRIVATE_KEY` | Deploy’da kullanılacak **private** key (PEM, tam metin) |
+| Secret | `DEPLOY_HOST` | Dışarıdan ulaştığın **public IP** veya DNS (port yönlendirmen dışa ne veriyorsa) |
+| Secret | `DEPLOY_USER` | SSH kullanıcı adı, ör. `ubuntu` |
+| Variable | `DEPLOY_PATH` | Sunucudaki proje kökü, ör. `/home/ubuntu/Project` (aynı yere `git clone`) |
 
-| Tip | Ad | Örnek |
-|-----|-----|--------|
-| Secret | `DEPLOY_SSH_PRIVATE_KEY` | SSH private key (tam metin) |
-| Secret | `DEPLOY_HOST` | VM’nin dışarıdan erişilen IP veya DNS |
-| Secret | `DEPLOY_USER` | `ubuntu` vb. |
-| Variable | `DEPLOY_PATH` | `/home/ubuntu/Project` (git kökü) |
+`production` [environment](https://docs.github.com/en/actions/deployment/targeting-different-environments/managing-environments) açıksa, aynı isimli secret/variable’ları oraya da ekle.
 
-**`production` environment** kullanıyorsan (varsayılan), aynı isimli secret/variable’ları o environment için de tanımlaman gerekir.
+**VM’de bir kez:** `DEPLOY_SSH_PRIVATE_KEY` ile aynı çiftin **public** anahtarını, deploy kullanıcısının `~/.ssh/authorized_keys` dosyasına ekle. Repoda `git pull` (ör. [Deploy key](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys#deploy-keys)) aynı clone kökünde çalışsın. Aşağıdaki bölümlerde Docker + `.env` hazır olsun.
 
-**VM’de bir kez:** Aynı repoyu klonla; `~/.ssh/authorized_keys` içine bu private key’e ait **public key**; repoya `git pull` için **Deploy key** (veya erişim belirteci). `docker` ve aşağıdaki bölüm 4 ile servis ayağa kalkmış olsun.
+**Dışarıdan SSH açılırken (ev/ofis, VMware):** Router’da **WAN → VM iç IP:22** (veya 2222 dış, 22 iç) yönlendir; VM mümkünse **Bridged** veya yönlendirdiğin sabit **LAN** IP. `DEPLOY_HOST` = dış ağa görünen IPv4; IP sık değişiyorsa [DuckDNS](https://www.duckdns.org) gibi isim. Kendi PC’nden `ssh DEPLOY_USER@DEPLOY_HOST` (veya `ssh -p 2222 ...`) dene; bu çalışıyorsa GitHub Actions de aynı yolu kullanır. **Güvenlik:** Parola tabanlı SSH’ı kapat, sadece key; tercihen sadece sana ait ağlardan 22 aç. GitHub’ın [meta API](https://api.github.com/meta) ile dönen IP aralıkları değişebilir; “sadece GitHub” IP’sine 22 açmak zahmetlidir, çoğu ekip key + sınırlı erişim veya tünel tercih eder.
 
-**Ağ (önemli):** GitHub’ın sunucuları (internet) bu makineye **SSH açabilmeli**. Sadece **VMware NAT** ve 192.168.x iç IP varsa, dışarıdan erişim olmaz; bu durumda ağda **Bridget + dış port / statik yönlendirme**, public IP, VPN veya **self-hosted GitHub runner** (VM üzerinde çalışır, inbound SSH gerekmez) gibi alternatiflere ihtiyaç vardır.
+Tetik: CI yeşil olduktan sonra, veya manuel **Actions → Deploy Ubuntu (VMware / SSH) → Run workflow**.
 
-Eski [EC2 SSH deploy](.github/workflows/deploy-ec2-simple.yml) workflow’u kullanmıyorsan depoda etkisiz bırakabilir veya yorum satırıyla kapatabilirsin; VMware için yeni dosya yeterlidir.
+*Not:* Dışarıya hiç port açamayacaksan, depoya **self-hosted GitHub runner** (VM’de) ile benzer adımları bir workflow’da koşturman gerekir; bu repo artık varsayılan olarak **SSH yolu**n kullanıyor.
+
+Eski [EC2 SSH](.github/workflows/deploy-ec2-simple.yml) ayrı bir workflow; aynı sunucu için ikisini birden açma.
 
 ---
 
@@ -108,6 +110,13 @@ Konteynerlerin durumu:
 ```bash
 docker compose -f docker-compose.prod.yml ps
 ```
+
+### İlk canlı ve sonraki deploy’lar (özet)
+
+- **Veri:** `pgdata_prod` (DB + RAG) ve `ollama_data_prod`; `docker compose down` **-v yok** sürece silinmez.  
+- **İlk `up`, indeks boşken:** [docker-entrypoint](backend/docker-entrypoint.sh) + [`init_rag_if_empty`](backend/core/management/commands/init_rag_if_empty.py) → **sınırsız** `refresh_rag` (`--max-pages 0`, `--depth -1`, HTTP-only; imajda Chrome yok, OBS/JS yok). `AUTO_RAG_WHEN_EMPTY=0` ile kapatılabilir (`.env` / `.env.production` üzerinden compose değişkeni).  
+- **Sonraki açılış / GitHub deploy:** `DocumentChunk` varken tarama **tekrarlanmaz**; sadece imaj/kod + volume’daki veri.  
+- Ayrıntı: [deploy/ILK_DEPLOY_VE_VERI.md](deploy/ILK_DEPLOY_VE_VERI.md).
 
 ---
 

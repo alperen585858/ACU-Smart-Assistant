@@ -1,9 +1,10 @@
-# main branch'e push -> CI basarili olunca VMware icindeki Ubuntu'ya SSH ile deploy.
-# (AWS/ECR gerekmez; herhangi bir erisilebilir Ubuntu sunucu IP'si + SSH ile calisir.)
+# main -> CI basarili -> bu job GitHub sunucusundan hedefe SSH acar, git pull + docker compose.
+# (AWS/ECR gerekmez.) Gerek: GitHub'dan hedefe TCP 22 (veya yonlendirdigin dis port) + SSH key.
+# Bu repo: SSH dis deploy (self-hosted runner workflow'u yok).
 #
 # Zorunlu GitHub repository Secrets (Settings -> Secrets and variables -> Actions):
 #   DEPLOY_SSH_PRIVATE_KEY  — hedefe SSH ile baglanan private key (tam metin, -----BEGIN...END-----)
-#   DEPLOY_HOST             — IP veya hostname (ornek: 192.168.1.50 veya vm-ubuntu.lan)
+#   DEPLOY_HOST             — disaridan erisilen IP veya DNS (ornek: public IP, duckdns hostname)
 #   DEPLOY_USER             — ssh kullanici (ornek: ubuntu)
 #
 # Zorunlu GitHub variable (Settings -> Variables -> New repository variable):

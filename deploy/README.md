@@ -2,6 +2,7 @@
 
 | Dosya | Amaç |
 |--------|------|
+| [`ILK_DEPLOY_VE_VERI.md`](ILK_DEPLOY_VE_VERI.md) | İlk deploy’da bir kez scrape+embed, sonraki deploy’larda sadece kod + Docker volume’lerle veri kalıcılığı. |
 | `env.production.example` | `.env.production` ve AWS task env için başlıca değişken listesi (kök dizine kopyalayın). |
 | `github-oidc-trust-policy.json` | GitHub Actions OIDC için IAM role **trust policy** taslağı (`YOUR_*` alanlarını değiştirin). |
 | `iam-ecr-ecs-deploy-policy.json` | CD rolüne eklenecek **inline policy** taslağı (ECR + ECS; repoları ve account’u özelleştirin). |
