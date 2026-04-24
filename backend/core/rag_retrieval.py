@@ -41,6 +41,8 @@ from core.rag_keywords import (
     RAG_STEM_OR_ENGINEERING_INTENT_RE,
     faculty_list_embedding_phrase,
     faculty_roster_path_filter,
+    fee_tuition_intent,
+    is_university_wide_fee_rag_query,
     leadership_embedding_phrase,
     rag_keywords_from_query,
     stem_engineering_boost_terms,
@@ -344,6 +346,15 @@ def _embedding_variants(composed: str, raw_user: str | None) -> list[str]:
     lead_phrase = leadership_embedding_phrase(fl_blob)
     if lead_phrase and lead_phrase.casefold() not in {v.casefold() for v in variants}:
         variants.append(lead_phrase)
+    # All-program tuition pages (not a single /computer-engineering/ path).
+    if is_university_wide_fee_rag_query(fl_blob):
+        fee_all = (
+            "Acıbadem University full tuition and fee schedule all faculties programs "
+            "undergraduate graduate Medicine Engineering Health Law Dentistry Pharmacy "
+            "vocational school associate degree price list"
+        )
+        if fee_all.casefold() not in {v.casefold() for v in variants}:
+            variants.append(fee_all)
     # Dedupe preserving order
     seen: set[str] = set()
     out: list[str] = []
@@ -373,12 +384,35 @@ def _merge_best_distances(vectors: list[list[float]], per_vector_pool: int) -> d
     return best
 
 
-# STEM: de-prioritize portal pages that mention many program names in passing.
+# STEM: de-prioritize generic portal / events (not /fees/ or "tuition" in URL — that hurt fee questions).
 _STEM_LOW_VALUE_PAGE_RE = re.compile(
     r"event|etkinlik|kariyer|career|duyur|announce|haber|news|kongre|congress|"
-    r"life-sciences|burs|scholar|tuition|fee|mezun|alumni|ilan|job|kampus\s*gez",
+    r"life-sciences|mezun|alumni|ilan|job|kampus\s*gez|graduate-fair|e-bulten|ebulten|"
+    r"tubitak|tübitak",
     re.IGNORECASE,
 )
+
+# Fee questions: a chunk is usable only if the URL or body clearly concerns fees/tuition/currency.
+_FEE_PATH_OR_TITLE_HINT = re.compile(
+    r"fee|ucret|ücret|tuition|ogrenim|öğrenim|burs|scholarship|financial|"
+    r"pricing|kay[ıi]t.*ucret|kayıt.*ücret|ucreti|ucret-bilgi|academic-fee|"
+    r"tuition-fee|ogrenim-ucreti|admissions.*fee|fees-and|fees-and-tuition|/fees/|/ucret",
+    re.IGNORECASE,
+)
+_FEE_TEXT_EVIDENCE = re.compile(
+    r"tuition|ücret|ucret|öğrenim|ogrenim|program\s+fee|annual\s+fee|"
+    r"\busd\b|\btry\b|₺|\$\s*[\d,\.]+|vat|kdv|y[ıi]ll[ıi]k|taksit|per\s+year|/year|"
+    r"scholarship|burs|financial\s+aid|ödeme|odeme|payment\s+plan|pe[şs]in|pesin",
+    re.IGNORECASE,
+)
+
+
+def _chunk_bears_fee_grounding(ch: DocumentChunk) -> bool:
+    u = f"{ch.source_url or ''} {ch.page_title or ''}"
+    if _FEE_PATH_OR_TITLE_HINT.search(u):
+        return True
+    blob = f"{ch.page_title or ''}\n{ch.content or ''}"[:80000]
+    return bool(_FEE_TEXT_EVIDENCE.search(blob))
 
 
 def _stem_noise_penalty(url: str, title: str) -> float:
@@ -479,6 +513,9 @@ def search_document_chunks(
     if not composed_query:
         return "", [], False, True
 
+    q_blob = f"{composed_query} {raw_user_query or ''}".strip()
+    fee_intent = fee_tuition_intent(q_blob)
+
     whois_anchor: str | None = None
     if RAG_WHOIS_QUERY_EXPAND:
         _wn = whois_name_from_queries(composed_query, raw_user_query)
@@ -534,10 +571,12 @@ def search_document_chunks(
             f"{composed_query} {raw_user_query or ''}"
         )
     )
+    # STEM URL noise penalty would punish real /fees/ URLs; also fee questions are not "STEM list" queries.
+    apply_stem_noise = stem_intent and not fee_intent
 
     t_rerank = time.time()
     reranked = _rerank_items(
-        candidate_slice, composed_query, raw_user_query, stem_query=stem_intent
+        candidate_slice, composed_query, raw_user_query, stem_query=apply_stem_noise
     )
     logger.info("RAG rerank: %.2fs (%d candidates)", time.time() - t_rerank, len(candidate_slice))
 
@@ -547,11 +586,61 @@ def search_document_chunks(
         vector_block = thresh_hits[:RAG_TOP_K]
     elif thresh_hits:
         vector_block = thresh_hits
-    elif RAG_RELAX_ON_EMPTY and has_rows:
+    elif RAG_RELAX_ON_EMPTY and has_rows and not fee_intent:
         vector_block = reranked[:RAG_TOP_K]
         used_relaxed = bool(vector_block)
+    elif RAG_RELAX_ON_EMPTY and has_rows and fee_intent:
+        relaxed_fee = [
+            (c, d) for c, d in reranked[:per_pool] if _chunk_bears_fee_grounding(c)
+        ]
+        if relaxed_fee:
+            vector_block = relaxed_fee[:RAG_TOP_K]
+            used_relaxed = True
+        else:
+            vector_block = []
     else:
         vector_block = []
+
+    if fee_intent and has_rows:
+        seen_vb = {c.pk for c, _ in vector_block}
+        fee_url_q = (
+            Q(source_url__icontains="tuition")
+            | Q(source_url__icontains="ucret")
+            | Q(source_url__icontains="ücret")
+            | Q(source_url__icontains="/fees")
+            | Q(source_url__icontains="ogrenim-ucret")
+            | Q(source_url__icontains="kayit-ucret")
+            | Q(source_url__icontains="ogrenim-ucreti")
+            | Q(source_url__icontains="ucretlendirme")
+            | Q(source_url__icontains="ucret-")
+            | Q(source_url__icontains="fee-schedule")
+            | Q(source_url__icontains="fee-information")
+            | Q(source_url__icontains="price-list")
+            | Q(source_url__icontains="fiyat")
+            | Q(source_url__icontains="tarife")
+            | Q(source_url__icontains="admissions")
+            | Q(source_url__icontains="kabul")
+        )
+        extra_fee = list(
+            DocumentChunk.objects.filter(fee_url_q)
+            .only("pk", "content", "page_title", "source_url", "embedding")[:24]
+        )
+        fee_prepend: list[tuple[DocumentChunk, float]] = []
+        for ch in extra_fee:
+            if ch.pk in seen_vb or not _chunk_bears_fee_grounding(ch):
+                continue
+            seen_vb.add(ch.pk)
+            fee_prepend.append((ch, 0.12))
+        if fee_prepend:
+            vector_block = fee_prepend + list(vector_block)
+
+    if fee_intent:
+        filtered = [(c, d) for c, d in vector_block if _chunk_bears_fee_grounding(c)]
+        if filtered:
+            vector_block = filtered
+        else:
+            vector_block = []
+            used_relaxed = False
 
     ranked: list[tuple[DocumentChunk, float]] = []
     seen_pk: set[int] = set()
@@ -571,7 +660,6 @@ def search_document_chunks(
         for ch in whois_chunks[:8]:
             push_kw(ch, 0.59)
 
-    q_blob = f"{composed_query} {raw_user_query or ''}"
     if has_rows and RAG_FACULTY_ROSTER_INTENT_RE.search(q_blob):
         path_seg = faculty_roster_path_filter(q_blob)
         if path_seg:
@@ -600,7 +688,7 @@ def search_document_chunks(
         for ch in DocumentChunk.objects.filter(q_ld)[:22]:
             push_kw(ch, 0.2)
 
-    if RAG_KEYWORD_BOOST and has_rows:
+    if RAG_KEYWORD_BOOST and has_rows and not fee_intent:
         stem_terms = stem_engineering_boost_terms(composed_query)
         if stem_terms:
             q_filter = Q()
@@ -664,7 +752,7 @@ def search_document_chunks(
 
     def _effective_sort_distance(ch: DocumentChunk, nominal: float) -> float:
         d = real_dist.get(ch.pk, float(nominal))
-        if stem_intent:
+        if apply_stem_noise:
             d += _stem_noise_penalty(
                 str(ch.source_url or ""), str(ch.page_title or "")
             )
@@ -733,6 +821,7 @@ def search_document_chunks(
         and faculty_path_for_inject
         and RAG_FACULTY_ROSTER_INTENT_RE.search(q_blob)
         and not whois_anchor
+        and not fee_intent
     )
     if faculty_inject_only and inject_skip_url:
         src = [
@@ -749,7 +838,7 @@ def search_document_chunks(
         )
         return inject_block, src, used_relaxed, True
 
-    if mgmt_block and mgmt_url:
+    if mgmt_block and mgmt_url and not fee_intent:
         src_mgmt = [
             {
                 "url": mgmt_url,
@@ -775,6 +864,8 @@ def search_document_chunks(
 
     def try_add_context_chunk(ch: DocumentChunk, nominal_dist: float) -> None:
         nonlocal total
+        if fee_intent and not _chunk_bears_fee_grounding(ch):
+            return
         if total >= max_context_chars:
             return
         cid = ch.pk
@@ -810,10 +901,12 @@ def search_document_chunks(
         try_add_context_chunk(chunk, dist_val)
 
     if total < max_context_chars and RAG_VECTOR_FILL_EXTRA > 0:
-        fill_slice = [
+        pool = [
             (ch, d) for ch, d in reranked if ch.pk not in seen_chunk_ids
-        ][:RAG_VECTOR_FILL_EXTRA]
-        # Use existing dist_map distances instead of an extra DB query
+        ][: RAG_VECTOR_FILL_EXTRA * 4]
+        if fee_intent:
+            pool = [(c, d) for c, d in pool if _chunk_bears_fee_grounding(c)]
+        fill_slice = pool[:RAG_VECTOR_FILL_EXTRA]
         for ch, _ in fill_slice:
             if ch.pk not in real_dist:
                 real_dist[ch.pk] = dist_map.get(ch.pk, 1.0)

@@ -78,8 +78,8 @@ docker compose exec backend python manage.py refresh_rag --max-pages 60 --depth 
 
 Notlar:
 
-- `docker-compose.yml` icinde backend icin `OLLAMA_BASE_URL` varsayilani konteyner ici `http://ollama:11434` olarak ayarlidir.
-- Host tarafinda `manage.py` kosacaksan `POSTGRES_HOST=localhost` ve hosta acilan portu (genelde `5433`) kullan.
+- Varsayilan: Ollama Mac uygulamasinda calisir; `docker compose` Ollama konteyneri baslatmaz. Backend konteyneri `OLLAMA_DOCKER_URL` (varsayilan `http://host.docker.internal:11434`) uzerinden host Ollama’ya baglanir. Docker ici Ollama icin: `OLLAMA_DOCKER_URL=http://ollama:11434` ve `docker compose --profile docker-ollama up -d`.
+- Host tarafinda `manage.py` kosacaksan `POSTGRES_HOST=localhost`, hosta acilan portu ve `OLLAMA_BASE_URL=http://127.0.0.1:11434` kullan.
 
 ## Docker Olmadan Yerel Gelistirme
 

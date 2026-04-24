@@ -70,6 +70,42 @@ RAG_LEADERSHIP_INTENT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Tuition / price (shared by compose_rag_search_query + retrieval filters)
+RAG_FEE_TUITION_INTENT_RE = re.compile(
+    r"\b(price|prices|fee|fees|tuition|ücret|ücreti|ücretler|"
+    r"scholarship|burs|how\s+much|what\s+.*\s+cost|costs?|"
+    r"annual|yıllık|yillik|öğrenim|ogrenim|payment|ödeme|odeme)\b",
+    re.IGNORECASE,
+)
+
+# User wants university-wide or full fee list, not a single department.
+RAG_BROAD_FEE_LIST_INTENT_RE = re.compile(
+    r"\b(tüm|bütün|butun|hepsi|all|every|"
+    r"tüm\s+ücret|bütün\s+ücret|tum\s+ücret|tüm\s+program|bütün\s+program|"
+    r"tüm\s+bölüm|bütün\s+bölüm|tüm\s+fakülte|bütün\s+fakülte|"
+    r"all\s+programs?|all\s+fees?|all\s+departments?|all\s+tuition|all\s+prices?|"
+    r"list\s+of\s+fees?|fee\s+list|ücret\s+listesi|ücretler\s+ne|"
+    r"what\s+are\s+the\s+fees|tüm\s+öğrenim|bütün\s+öğrenim)\b",
+    re.IGNORECASE,
+)
+
+
+def fee_tuition_intent(text: str) -> bool:
+    return bool(RAG_FEE_TUITION_INTENT_RE.search(text or ""))
+
+
+def is_university_wide_fee_rag_query(text: str) -> bool:
+    """
+    True: user asked for all / general program fees, not a single known department path.
+    Used for extra embedding + compose line (retrieve schedule-style pages, not one dept only).
+    """
+    t = text or ""
+    if not RAG_FEE_TUITION_INTENT_RE.search(t):
+        return False
+    if RAG_BROAD_FEE_LIST_INTENT_RE.search(t):
+        return True
+    return faculty_roster_path_filter(t) is None
+
 
 def leadership_embedding_phrase(query: str) -> str | None:
     """Steer retrieval toward pages that name deans/rector/faculty leadership, not generic contact."""

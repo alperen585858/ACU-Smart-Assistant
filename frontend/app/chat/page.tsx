@@ -432,7 +432,10 @@ export default function ChatPage() {
         }
       } else {
         replyText =
-          "Could not connect. Check NEXT_PUBLIC_API_URL and that the backend is running.";
+          `Could not reach the API at ${apiBase} (network error). ` +
+          "Is Django running? If you use Nginx on :8080, set NEXT_PUBLIC_API_URL to that " +
+          "base URL in Project/.env and in frontend/.env.local, then restart the Next dev server. " +
+          "If you open the app from another device, use the computer's LAN IP instead of localhost.";
       }
     } finally {
       activeChatAbortRef.current = null;

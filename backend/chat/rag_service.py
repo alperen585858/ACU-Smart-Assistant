@@ -2,8 +2,10 @@ import os
 import re
 
 from core.rag_keywords import (
+    RAG_BROAD_FEE_LIST_INTENT_RE,
     RAG_DEPT_OR_FACULTY_INTENT_RE,
     RAG_FACULTY_ROSTER_INTENT_RE,
+    RAG_FEE_TUITION_INTENT_RE,
     RAG_LEADERSHIP_INTENT_RE,
     RAG_STEM_OR_ENGINEERING_INTENT_RE,
     faculty_roster_path_filter,
@@ -76,7 +78,12 @@ SYSTEM_RAG_USER_WRAPPER = (
     "is listed when the excerpts name any unit. "
     "(9) If the user names a specific field (e.g. Computer Engineering) and that phrase or a clear Turkish "
     "equivalent appears in the excerpts, affirm it from the text; do not claim it is missing unless those "
-    "strings truly do not appear."
+    "strings truly do not appear. "
+    "(10) Tuition or fees: if the user asked about one specific department or program, do not cite another "
+    "unit’s fees as if they were for that unit. If they asked for all programs, the full fee list, or general "
+    "university tuition, you may summarize every program and amount that appears in the excerpts. "
+    "If excerpts lack the fee for a named program, use the refusal in rule 6—do not borrow numbers from "
+    "unrelated passages."
 )
 
 SYSTEM_SMALLTALK = (
@@ -201,6 +208,29 @@ def compose_rag_search_query(current_message: str, prior_user_messages: list[str
         re.IGNORECASE,
     ):
         merged = f"{merged}\npostal address campus location contact Istanbul Kerem Aydinlar"
+    elif RAG_FEE_TUITION_INTENT_RE.search(merged):
+        # Default: all faculties / programs (crawl may hold one page with many program rows).
+        # Narrow to one department only when a known dept phrase matches AND user did not ask for
+        # "all fees" (tüm / all programs / etc.).
+        path_seg = faculty_roster_path_filter(merged)
+        broad_fees = bool(RAG_BROAD_FEE_LIST_INTENT_RE.search(merged)) or path_seg is None
+        if broad_fees:
+            merged = (
+                f"{merged}\n"
+                "Acıbadem University all undergraduate graduate programs tuition and fees "
+                "all faculties schools Medicine Health Sciences Engineering Law Pharmacy "
+                "Dentistry vocational associate degree master doctoral öğrenim ücreti "
+                "fee schedule list annual"
+            )
+        else:
+            merged = (
+                f"{merged}\n"
+                "Acıbadem University tuition and fees admissions "
+                "undergraduate graduate program fee öğrenim ücreti annual cost"
+            )
+            if path_seg:
+                label = path_seg.replace("-", " ")
+                merged = f"{merged}\n{label} program tuition fee"
     elif RAG_FACULTY_ROSTER_INTENT_RE.search(merged) and (
         RAG_STEM_OR_ENGINEERING_INTENT_RE.search(merged)
         or faculty_roster_path_filter(merged)
