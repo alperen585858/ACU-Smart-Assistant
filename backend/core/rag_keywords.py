@@ -35,7 +35,32 @@ RAG_FACULTY_ROSTER_INTENT_RE = re.compile(
 )
 
 # Query substring → URL path segment under .../departments/<segment>/ (see site structure).
+# Faculty of Medicine before generic "medicine" heuristics; see faculty_roster_path_filter.
 _FACULTY_ROSTER_PATHS: list[tuple[tuple[str, ...], str]] = [
+    (
+        (
+            "faculty of health sciences",
+            "health sciences",
+            "health sciences faculty",
+            "sağlık bilimleri fakültesi",
+            "saglik bilimleri fakultesi",
+            "sağlık bilimleri",
+            "saglik bilimleri",
+        ),
+        "faculty-of-health-sciences",
+    ),
+    (
+        (
+            "faculty of medicine",
+            "tıp fakültesi",
+            "tıp fakultesi",
+            "tip fakultesi",
+            "hekimlik",
+            "medical school",
+            "doctor of medicine",
+        ),
+        "faculty-of-medicine",
+    ),
     (
         (
             "computer engineering",
@@ -61,7 +86,55 @@ def faculty_roster_path_filter(query: str) -> str | None:
     for needles, path_seg in _FACULTY_ROSTER_PATHS:
         if any(n in ql for n in needles):
             return path_seg
+    # "medicine" + price → Tıp Fakültesi / MD, not MYO "Medical X Techniques" rows on the same fee page
+    if re.search(r"(?i)\bmedicine\b", ql) and re.search(
+        r"(?i)\b(price|fee|fees|tuition|ücret|costs?|how\s+much|payment|ödeme|odeme)\b", ql
+    ):
+        if re.search(
+            r"(?i)medical\s+education|t[ıi]p\s*e[ğg]itimi\s*(yüksek|master)|master[’']?s\s+in\s+medical",
+            ql,
+        ):
+            return None
+        if not re.search(
+            r"(?i)(biomedic|biyomed|laborator|techniques?|imaging|podolog|podiatry|radiother|pathology|"
+            r"secretar|documentation|veterinary|dental\s+nurs|myo\b|ön\s*lisans|on\s*lisans)",
+            ql,
+        ):
+            return "faculty-of-medicine"
     return None
+
+
+def department_snippet_anchor_phrases(query: str) -> list[str]:
+    """
+    Phrases to center RAG snippets on when the user names a department (esp. fee rows
+    below the default chunk prefix). Longer / more specific phrases first.
+    """
+    seg = faculty_roster_path_filter(query)
+    if not seg:
+        return []
+    for needles, path_seg in _FACULTY_ROSTER_PATHS:
+        if path_seg != seg:
+            continue
+        phrases: list[str] = []
+        # Prefer multi-word names so we land on the fee table row, not random "Bilgisayar" hits.
+        for n in needles:
+            n = n.strip()
+            if len(n) >= 4:
+                phrases.append(n)
+        # Title-style label from URL segment
+        label = " ".join(w.capitalize() for w in seg.split("-") if w)
+        if label and label not in phrases:
+            phrases.insert(0, label)
+        seen: set[str] = set()
+        out: list[str] = []
+        for p in sorted(phrases, key=len, reverse=True):
+            k = p.casefold()
+            if k not in seen:
+                seen.add(k)
+                out.append(p)
+        return out[:10]
+    label = " ".join(w.capitalize() for w in seg.split("-") if w)
+    return [label] if label else []
 
 
 # Deans, rector, university leadership (not the same as “teachers / academic staff list”).

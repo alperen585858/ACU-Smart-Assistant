@@ -9,6 +9,7 @@ from core.rag_keywords import (
     RAG_LEADERSHIP_INTENT_RE,
     RAG_STEM_OR_ENGINEERING_INTENT_RE,
     faculty_roster_path_filter,
+    fee_tuition_intent,
 )
 from core.rag_retrieval import search_document_chunks
 
@@ -82,8 +83,10 @@ SYSTEM_RAG_USER_WRAPPER = (
     "(10) Tuition or fees: if the user asked about one specific department or program, do not cite another "
     "unit’s fees as if they were for that unit. If they asked for all programs, the full fee list, or general "
     "university tuition, you may summarize every program and amount that appears in the excerpts. "
-    "If excerpts lack the fee for a named program, use the refusal in rule 6—do not borrow numbers from "
-    "unrelated passages."
+    "If the named program is not mentioned in the excerpts, say it is not listed in this retrieved text. "
+    "If the program is named but a fee figure is not next to it in the excerpts, do not invent an amount; "
+    "you may use the rule 6 refusal for the missing number only, not to deny that the program exists. "
+    "Do not borrow numbers from unrelated passages."
 )
 
 SYSTEM_SMALLTALK = (
@@ -231,6 +234,20 @@ def compose_rag_search_query(current_message: str, prior_user_messages: list[str
             if path_seg:
                 label = path_seg.replace("-", " ")
                 merged = f"{merged}\n{label} program tuition fee"
+                if path_seg == "faculty-of-health-sciences":
+                    merged = (
+                        f"{merged}\n"
+                        "Acıbadem Faculty of Health Sciences Sağlık Bilimleri "
+                        "Physiotherapy Nursing Nutrition Dietetics Healthcare Management — "
+                        "not School of Medicine not associate vocational MYO not Engineering"
+                    )
+                if path_seg == "faculty-of-medicine":
+                    merged = (
+                        f"{merged}\n"
+                        "Acıbadem Faculty of Medicine Tıp Fakültesi lisans 6 year undergraduate "
+                        "MD hekimlik program tuition fee not Medical Education master yüksek lisans "
+                        "not pedagogy not vocational techniques MYO"
+                    )
     elif RAG_FACULTY_ROSTER_INTENT_RE.search(merged) and (
         RAG_STEM_OR_ENGINEERING_INTENT_RE.search(merged)
         or faculty_roster_path_filter(merged)
@@ -375,7 +392,9 @@ def prepare_chat_prompts(rag_query: str, user_plain: str) -> tuple[str, str, dic
                 "answer by summarizing concrete facts stated there (names, units, places). "
                 "Do not refuse unless the excerpts are truly empty of relevant facts."
             )
-        if RAG_DEPT_OR_FACULTY_INTENT_RE.search(user_plain):
+        if RAG_DEPT_OR_FACULTY_INTENT_RE.search(user_plain) and not fee_tuition_intent(
+            user_plain
+        ):
             system += (
                 "\n\nThe user asks for departments/faculties/schools. Extract and list every distinct "
                 "faculty, school, or department name that appears in the excerpts; if incomplete, "
@@ -406,6 +425,26 @@ def prepare_chat_prompts(rag_query: str, user_plain: str) -> tuple[str, str, dic
                 "Include only people who appear in that department’s staff list text. Do not add faculty "
                 "from Psychology, Biomedical, Medicine, or other units unless the staff list text itself "
                 "names them as part of the same department roster—do not invent or import names from memory."
+            )
+        if fee_tuition_intent(user_plain) and faculty_roster_path_filter(
+            user_plain
+        ) == "faculty-of-medicine":
+            system += (
+                "\n\nMEDICINE TUITION (English “medicine” = Tıp Fakültesi / undergraduate MD, unless the user said "
+                "“master’s” or “graduate” explicitly): Do NOT equate with: (1) “Medical Education” or similar master’s "
+                "programs, (2) Tıp Eğitimi yüksek lisans, (3) any health pedagogy or medical-technique associate "
+                "diploma, (4) “Medical … Techniques” lines. If the only fee rows name such programs, the undergraduate "
+                "Faculty of Medicine / hekimlik amount is not in the excerpt—say that and the rule 6 refusal for the exact "
+                "MD fee only; do not quote 3,500 USD (or any figure) from a Medical Education or technique program as "
+                "if it were the standard “medicine” (MD) tuition. Only use an amount if the excerpt clearly labels "
+                "Faculty of Medicine, Tıp, hekimlik, or the six-year MD / Tıp lisans next to that price."
+            )
+        elif fee_tuition_intent(user_plain) and faculty_roster_path_filter(user_plain):
+            system += (
+                "\n\nFEE + NAMED DEPARTMENT: Search the Context for that program in English and Turkish. "
+                "If a price appears on the same line or table row, report it. If the program name appears but "
+                "no amount is in the excerpt, say the specific fee is not in this retrieved text; do not claim "
+                "the university does not offer the program. Use rule 6 only when the Context has no relevant fee text."
             )
         user_llm = _wrap_user_with_rag_context(context, user_plain)
         _attach_llm_visibility_meta(meta, user_llm, len(context))

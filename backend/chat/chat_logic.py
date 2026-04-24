@@ -17,6 +17,11 @@ from .rag_service import (
 
 CHAT_HISTORY_MAX_MESSAGES = max(1, int(os.environ.get("CHAT_HISTORY_MAX_MESSAGES", "12")))
 
+# Long-RAG Ollama bump: 12k/900 was very slow on local 3B. Caps keep quality for long lists
+# but avoid minute-long generations; override if you have a fast GPU and need longer outputs.
+_OLLAMA_RAG_BUMP_MAX_CTX = int(os.environ.get("OLLAMA_RAG_BUMP_MAX_CTX", "8192"))
+_OLLAMA_RAG_BUMP_MAX_PREDICT = int(os.environ.get("OLLAMA_RAG_BUMP_MAX_PREDICT", "640"))
+
 
 def _ollama_rag_options(user_llm: str, rag_meta: dict) -> dict | None:
     """
@@ -31,8 +36,8 @@ def _ollama_rag_options(user_llm: str, rag_meta: dict) -> dict | None:
     ):
         return None
     return {
-        "num_ctx": max(OLLAMA_NUM_CTX, 12288),
-        "num_predict": max(OLLAMA_NUM_PREDICT, 900),
+        "num_ctx": max(OLLAMA_NUM_CTX, min(12288, _OLLAMA_RAG_BUMP_MAX_CTX)),
+        "num_predict": max(OLLAMA_NUM_PREDICT, min(900, _OLLAMA_RAG_BUMP_MAX_PREDICT)),
     }
 
 

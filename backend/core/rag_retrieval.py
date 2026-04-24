@@ -34,11 +34,14 @@ from core.rag_config import (
     RAG_VECTOR_FILL_EXTRA,
     RAG_WHOIS_EXTRA_EMBEDS,
     RAG_WHOIS_QUERY_EXPAND,
+    is_rag_source_url_blocked,
+    rag_source_url_blocklist_substrings,
 )
 from core.rag_keywords import (
     RAG_FACULTY_ROSTER_INTENT_RE,
     RAG_LEADERSHIP_INTENT_RE,
     RAG_STEM_OR_ENGINEERING_INTENT_RE,
+    department_snippet_anchor_phrases,
     faculty_list_embedding_phrase,
     faculty_roster_path_filter,
     fee_tuition_intent,
@@ -69,9 +72,12 @@ def _load_whois_name_chunks(anchor: str, out_limit: int, scan_limit: int = 200) 
         return []
     parts = [p for p in a.split() if len(p) >= 2]
     if not parts:
-        return list(DocumentChunk.objects.filter(content__icontains=a)[:out_limit])
+        q = DocumentChunk.objects.filter(content__icontains=a)[:out_limit]
+        return [ch for ch in q if not is_rag_source_url_blocked(str(ch.source_url or ""))]
     out: list[DocumentChunk] = []
     for ch in DocumentChunk.objects.filter(content__icontains=parts[0])[:scan_limit]:
+        if is_rag_source_url_blocked(str(ch.source_url or "")):
+            continue
         if whois_name_in_content(str(ch.content or ""), anchor):
             out.append(ch)
         if len(out) >= out_limit:
@@ -188,7 +194,7 @@ def _lexical_fallback_from_chunks(
             str(ch.page_title or ""),
             str(ch.content or ""),
         )
-        if score > 0:
+        if score > 0 and not is_rag_source_url_blocked(str(ch.source_url or "")):
             candidates.append((score, ch))
             if len(candidates) >= max_candidates:
                 break
@@ -223,6 +229,8 @@ def _lexical_fallback_from_chunks(
                 if total >= RAG_MAX_CHARS:
                     break
                 u = str(p.url or "")
+                if is_rag_source_url_blocked(u):
+                    continue
                 if url_counts.get(u, 0) >= RAG_MAX_CHUNKS_PER_URL:
                     continue
                 snippet = str(p.content or "")[:RAG_SNIPPET_CHARS]
@@ -284,7 +292,8 @@ def _lexical_fallback_from_pages(
         score += _intent_boost(
             composed_query, str(p.url or ""), str(p.title or ""), str(p.content or "")
         )
-        if score > 0:
+        purl = str(p.url or "")
+        if score > 0 and not is_rag_source_url_blocked(purl):
             candidates.append((score, p))
             if len(candidates) >= max_candidates:
                 break
@@ -346,6 +355,25 @@ def _embedding_variants(composed: str, raw_user: str | None) -> list[str]:
     lead_phrase = leadership_embedding_phrase(fl_blob)
     if lead_phrase and lead_phrase.casefold() not in {v.casefold() for v in variants}:
         variants.append(lead_phrase)
+    # English "medicine" + fees → Tıp Fakültesi / MD, not only MYO rows on a generic fee page
+    if fee_tuition_intent(fl_blob) and faculty_roster_path_filter(fl_blob) == "faculty-of-medicine":
+        med_line = (
+            "Acıbadem University Faculty of Medicine Tıp Fakültesi lisans six year MD hekimlik "
+            "undergraduate tuition not Medical Education master program not tıp eğitimi yüksek lisans"
+        )
+        if med_line.casefold() not in {v.casefold() for v in variants}:
+            variants.append(med_line)
+    if (
+        fee_tuition_intent(fl_blob)
+        and faculty_roster_path_filter(fl_blob) == "faculty-of-health-sciences"
+    ):
+        hs_line = (
+            "Acıbadem University Faculty of Health Sciences Sağlık Bilimleri "
+            "Physiotherapy Nursing Nutrition Dietetics Healthcare Management "
+            "undergraduate program tuition fee per year USD not Medicine not vocational school"
+        )
+        if hs_line.casefold() not in {v.casefold() for v in variants}:
+            variants.append(hs_line)
     # All-program tuition pages (not a single /computer-engineering/ path).
     if is_university_wide_fee_rag_query(fl_blob):
         fee_all = (
@@ -376,6 +404,8 @@ def _merge_best_distances(vectors: list[list[float]], per_vector_pool: int) -> d
             .order_by("distance")[:per_vector_pool]
         )
         for ch in qs:
+            if is_rag_source_url_blocked(str(ch.source_url or "")):
+                continue
             d = float(ch.distance)
             pk = ch.pk
             prev = best.get(pk)
@@ -562,6 +592,8 @@ def search_document_chunks(
         ch = chunk_map.get(pk)
         if ch is None:
             continue
+        if is_rag_source_url_blocked(str(ch.source_url or "")):
+            continue
         d = dist_map[pk]
         merged_order.append((ch, d))
 
@@ -578,6 +610,9 @@ def search_document_chunks(
     reranked = _rerank_items(
         candidate_slice, composed_query, raw_user_query, stem_query=apply_stem_noise
     )
+    reranked = [
+        (ch, d) for ch, d in reranked if not is_rag_source_url_blocked(str(ch.source_url or ""))
+    ]
     logger.info("RAG rerank: %.2fs (%d candidates)", time.time() - t_rerank, len(candidate_slice))
 
     thresh_hits = [(ch, d) for ch, d in reranked if d <= RAG_MAX_DISTANCE]
@@ -621,9 +656,15 @@ def search_document_chunks(
             | Q(source_url__icontains="admissions")
             | Q(source_url__icontains="kabul")
         )
+        fee_qs = DocumentChunk.objects.filter(fee_url_q)
+        bl = rag_source_url_blocklist_substrings()
+        if bl:
+            block_q = Q()
+            for sub in bl:
+                block_q |= Q(source_url__icontains=sub)
+            fee_qs = fee_qs.exclude(block_q)
         extra_fee = list(
-            DocumentChunk.objects.filter(fee_url_q)
-            .only("pk", "content", "page_title", "source_url", "embedding")[:24]
+            fee_qs.only("pk", "content", "page_title", "source_url", "embedding")[:24]
         )
         fee_prepend: list[tuple[DocumentChunk, float]] = []
         for ch in extra_fee:
@@ -646,6 +687,8 @@ def search_document_chunks(
     seen_pk: set[int] = set()
 
     def push_kw(ch: DocumentChunk, nominal: float) -> None:
+        if is_rag_source_url_blocked(str(ch.source_url or "")):
+            return
         pk = ch.pk
         if pk not in seen_pk:
             seen_pk.add(pk)
@@ -872,6 +915,8 @@ def search_document_chunks(
         if cid in seen_chunk_ids:
             return
         u = str(ch.source_url or "")
+        if is_rag_source_url_blocked(u):
+            return
         if inject_skip_url and u == inject_skip_url:
             return
         if url_counts.get(u, 0) >= RAG_MAX_CHUNKS_PER_URL:
@@ -879,6 +924,16 @@ def search_document_chunks(
         raw = str(ch.content or "")
         if whois_anchor and whois_name_in_content(raw, whois_anchor):
             snippet = snippet_around_phrase(raw, whois_anchor, RAG_SNIPPET_CHARS)
+        elif fee_intent:
+            # Fee tables often list the program below the default chunk prefix; center on the department row.
+            q_for_anchor = f"{raw_user_query or ''} {composed_query or ''}"
+            snippet = raw[:RAG_SNIPPET_CHARS]
+            low = raw.lower()
+            for ph in department_snippet_anchor_phrases(q_for_anchor):
+                p = (ph or "").strip()
+                if len(p) >= 4 and p.lower() in low:
+                    snippet = snippet_around_phrase(raw, p, RAG_SNIPPET_CHARS)
+                    break
         else:
             snippet = raw[:RAG_SNIPPET_CHARS]
         if total + len(snippet) > max_context_chars:
