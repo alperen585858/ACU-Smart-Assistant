@@ -6,7 +6,7 @@ from django.shortcuts import get_object_or_404
 
 from .models import ChatMessage, ChatSession
 from .llm_service import OLLAMA_NUM_CTX, OLLAMA_NUM_PREDICT, call_llm
-from .message_utils import parse_client_id, trim_last_user_for_llm, trim_message_for_llm
+from .message_utils import CHAT_MESSAGE_MAX_CHARS, parse_client_id, trim_last_user_for_llm, trim_message_for_llm
 from .rag_service import (
     RAG_META_REASON_SKIPPED_SMALLTALK,
     RAG_USER_BUBBLE_MAX_CHARS,
@@ -134,7 +134,9 @@ def _chat_with_db(body: dict, client_uuid: uuid.UUID) -> JsonResponse:
         prior_window = prior[-CHAT_HISTORY_MAX_MESSAGES:]
         for m in prior_window:
             if m.role in ("user", "assistant") and m.content.strip():
-                ollama_messages.append({"role": m.role, "content": trim_message_for_llm(m.content)})
+                # Aggressively trim assistant history to prevent model reusing old context
+                max_chars = 200 if m.role == "assistant" else CHAT_MESSAGE_MAX_CHARS
+                ollama_messages.append({"role": m.role, "content": trim_message_for_llm(m.content, max_chars)})
     ollama_messages.append({"role": "user", "content": trim_last_user_for_llm(user_llm, RAG_USER_BUBBLE_MAX_CHARS)})
 
     user_row = ChatMessage.objects.create(session=session, role="user", content=message)
