@@ -8,6 +8,7 @@ from core.rag_keywords import (
     RAG_FEE_TUITION_INTENT_RE,
     RAG_LEADERSHIP_INTENT_RE,
     RAG_STEM_OR_ENGINEERING_INTENT_RE,
+    extract_target_entity_key,
     faculty_roster_path_filter,
     fee_tuition_intent,
 )
@@ -248,6 +249,12 @@ def compose_rag_search_query(current_message: str, prior_user_messages: list[str
                         "MD hekimlik program tuition fee not Medical Education master yüksek lisans "
                         "not pedagogy not vocational techniques MYO"
                     )
+                if path_seg == "computer-programming":
+                    merged = (
+                        f"{merged}\n"
+                        "Computer Programming associate degree ön lisans not Computer Engineering "
+                        "not engineering faculty tuition row disambiguation"
+                    )
     elif RAG_FACULTY_ROSTER_INTENT_RE.search(merged) and (
         RAG_STEM_OR_ENGINEERING_INTENT_RE.search(merged)
         or faculty_roster_path_filter(merged)
@@ -445,6 +452,14 @@ def prepare_chat_prompts(rag_query: str, user_plain: str) -> tuple[str, str, dic
                 "If a price appears on the same line or table row, report it. If the program name appears but "
                 "no amount is in the excerpt, say the specific fee is not in this retrieved text; do not claim "
                 "the university does not offer the program. Use rule 6 only when the Context has no relevant fee text."
+            )
+        target_entity = extract_target_entity_key(user_plain)
+        if target_entity:
+            system += (
+                "\n\nENTITY GROUNDING (MANDATORY): Answer only from excerpts that explicitly mention "
+                "the same target entity as the user question. If excerpts mention only related but different "
+                "entities, do not transfer names, titles, or numbers across them. If the target entity is named "
+                "but the exact fact is missing, state that this specific detail is not present in the retrieved text."
             )
         user_llm = _wrap_user_with_rag_context(context, user_plain)
         _attach_llm_visibility_meta(meta, user_llm, len(context))

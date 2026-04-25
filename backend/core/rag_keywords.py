@@ -63,9 +63,18 @@ _FACULTY_ROSTER_PATHS: list[tuple[tuple[str, ...], str]] = [
     ),
     (
         (
+            "computer programming",
+            "computer programmer",
+            "bilgisayar programcılığı",
+            "bilgisayar programciligi",
+            "programming",
+        ),
+        "computer-programming",
+    ),
+    (
+        (
             "computer engineering",
             "bilgisayar mühendisliği",
-            "bilgisayar",
             "mühendisliği bölüm",
             "bolum bilgisayar",
         ),
@@ -79,10 +88,76 @@ _FACULTY_ROSTER_PATHS: list[tuple[tuple[str, ...], str]] = [
     (("software", "yazılım", "yazilim", "yazilim m"), "software"),
 ]
 
+_ENTITY_ALIAS_GROUPS: dict[str, tuple[str, ...]] = {
+    "computer-programming": (
+        "computer programming",
+        "computer programmer",
+        "bilgisayar programcılığı",
+        "bilgisayar programciligi",
+    ),
+    "computer-engineering": (
+        "computer engineering",
+        "bilgisayar mühendisliği",
+        "bilgisayar muhendisligi",
+    ),
+    "faculty-of-health-sciences": (
+        "faculty of health sciences",
+        "health sciences",
+        "sağlık bilimleri fakültesi",
+        "saglik bilimleri fakultesi",
+    ),
+    "faculty-of-medicine": (
+        "faculty of medicine",
+        "medical school",
+        "tıp fakültesi",
+        "tip fakultesi",
+        "hekimlik",
+    ),
+}
+
+_ENTITY_ORDER: tuple[str, ...] = (
+    "computer-programming",
+    "computer-engineering",
+    "faculty-of-health-sciences",
+    "faculty-of-medicine",
+)
+
+
+def extract_target_entity_key(query: str) -> str | None:
+    ql = (query or "").lower()
+    if not ql:
+        return None
+    for key in _ENTITY_ORDER:
+        aliases = _ENTITY_ALIAS_GROUPS.get(key, ())
+        if any(a in ql for a in aliases):
+            return key
+    return None
+
+
+def target_entity_aliases(entity_key: str | None) -> tuple[str, ...]:
+    if not entity_key:
+        return ()
+    aliases = _ENTITY_ALIAS_GROUPS.get(entity_key)
+    return tuple(aliases) if aliases else ()
+
+
+def target_entity_competitor_aliases(entity_key: str | None) -> tuple[str, ...]:
+    if not entity_key:
+        return ()
+    out: list[str] = []
+    for k, aliases in _ENTITY_ALIAS_GROUPS.items():
+        if k == entity_key:
+            continue
+        out.extend(list(aliases))
+    return tuple(dict.fromkeys(out))
+
 
 def faculty_roster_path_filter(query: str) -> str | None:
     """URL segment e.g. computer-engineering, or None if no department match."""
     ql = (query or "").lower()
+    key = extract_target_entity_key(ql)
+    if key:
+        return key
     for needles, path_seg in _FACULTY_ROSTER_PATHS:
         if any(n in ql for n in needles):
             return path_seg
@@ -227,6 +302,22 @@ def stem_engineering_boost_terms(query: str) -> list[str]:
         return []
     ql = query.lower()
     out: list[str] = []
+    if re.search(r"computer\s+programming|bilgisayar\s+programc", ql):
+        out.extend(
+            [
+                "Computer Programming",
+                "Bilgisayar Programcılığı",
+                "associate degree",
+                "ön lisans",
+            ]
+        )
+        seen_prog: set[str] = set()
+        deduped_prog: list[str] = []
+        for t in out:
+            if t.lower() not in seen_prog:
+                seen_prog.add(t.lower())
+                deduped_prog.append(t)
+        return deduped_prog
     if re.search(r"computer|bilgisayar|informatics|yazılım|yazilim|software", ql):
         # Phrases first (icontains order uses list order). Avoid lone "Bilgisayar" — matches too many pages.
         out.extend(

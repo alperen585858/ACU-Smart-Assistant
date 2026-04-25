@@ -44,6 +44,7 @@ from core.rag_keywords import (
     RAG_LEADERSHIP_INTENT_RE,
     RAG_STEM_OR_ENGINEERING_INTENT_RE,
     department_snippet_anchor_phrases,
+    extract_target_entity_key,
     faculty_list_embedding_phrase,
     faculty_roster_path_filter,
     fee_tuition_intent,
@@ -52,6 +53,8 @@ from core.rag_keywords import (
     rag_keywords_from_query,
     stem_engineering_boost_terms,
     structured_list_boost_terms,
+    target_entity_aliases,
+    target_entity_competitor_aliases,
 )
 from core.rag_query_expand import (
     snippet_around_phrase,
@@ -460,6 +463,11 @@ _FEE_TEXT_EVIDENCE = re.compile(
     re.IGNORECASE,
 )
 
+_ENTITY_NOISE_SOURCE_RE = re.compile(
+    r"career|kariyer|event|etkinlik|news|haber|announcement|duyuru",
+    re.IGNORECASE,
+)
+
 
 def _chunk_bears_fee_grounding(ch: DocumentChunk) -> bool:
     u = f"{ch.source_url or ''} {ch.page_title or ''}"
@@ -467,6 +475,15 @@ def _chunk_bears_fee_grounding(ch: DocumentChunk) -> bool:
         return True
     blob = f"{ch.page_title or ''}\n{ch.content or ''}"[:80000]
     return bool(_FEE_TEXT_EVIDENCE.search(blob))
+
+
+def _entity_alignment_score(
+    text: str, target_aliases: tuple[str, ...], competitor_aliases: tuple[str, ...]
+) -> tuple[int, int]:
+    low = (text or "").lower()
+    pos = sum(1 for a in target_aliases if a and a.lower() in low)
+    neg = sum(1 for a in competitor_aliases if a and a.lower() in low)
+    return pos, neg
 
 
 def _stem_noise_penalty(url: str, title: str) -> float:
@@ -569,6 +586,9 @@ def search_document_chunks(
 
     q_blob = f"{composed_query} {raw_user_query or ''}".strip()
     fee_intent = fee_tuition_intent(q_blob)
+    target_entity = extract_target_entity_key(q_blob)
+    target_alias = target_entity_aliases(target_entity)
+    competitor_alias = target_entity_competitor_aliases(target_entity)
 
     whois_anchor: str | None = None
     if RAG_WHOIS_QUERY_EXPAND:
@@ -650,6 +670,14 @@ def search_document_chunks(
     reranked = [
         (ch, d) for ch, d in reranked if not is_rag_source_url_blocked(str(ch.source_url or ""))
     ]
+    if target_alias:
+        tuned: list[tuple[DocumentChunk, float]] = []
+        for ch, d in reranked:
+            blob = f"{ch.page_title or ''}\n{ch.content or ''}\n{ch.source_url or ''}"
+            pos, neg = _entity_alignment_score(blob, target_alias, competitor_alias)
+            d2 = d - min(0.07, 0.02 * pos) + min(0.05, 0.01 * neg)
+            tuned.append((ch, d2))
+        reranked = tuned
     logger.info("RAG rerank: %.2fs (%d candidates)", time.time() - t_rerank, len(candidate_slice))
 
     thresh_hits = [(ch, d) for ch, d in reranked if d <= RAG_MAX_DISTANCE]
@@ -836,6 +864,12 @@ def search_document_chunks(
             d += _stem_noise_penalty(
                 str(ch.source_url or ""), str(ch.page_title or "")
             )
+        if target_alias:
+            blob = f"{ch.page_title or ''}\n{ch.content or ''}\n{ch.source_url or ''}"
+            pos, neg = _entity_alignment_score(blob, target_alias, competitor_alias)
+            d = d - min(0.06, 0.02 * pos) + min(0.04, 0.01 * neg)
+            if _ENTITY_NOISE_SOURCE_RE.search(str(ch.source_url or "")):
+                d += 0.04
         if whois_anchor and whois_name_in_content(str(ch.content or ""), whois_anchor):
             d = min(d, 0.08)
         if int(ch.pk) in faculty_roster_pks:
@@ -959,6 +993,11 @@ def search_document_chunks(
         if url_counts.get(u, 0) >= RAG_MAX_CHUNKS_PER_URL:
             return
         raw = str(ch.content or "")
+        if target_alias:
+            blob = f"{ch.page_title or ''}\n{raw}\n{u}"
+            pos, neg = _entity_alignment_score(blob, target_alias, competitor_alias)
+            if pos == 0 and neg > 0:
+                return
         if whois_anchor and whois_name_in_content(raw, whois_anchor):
             snippet = snippet_around_phrase(raw, whois_anchor, RAG_SNIPPET_CHARS)
         elif fee_intent:
