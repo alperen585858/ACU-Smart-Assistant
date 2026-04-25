@@ -9,6 +9,7 @@ import logging
 import re
 import time
 
+from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector
 from django.db import connection
 from django.db.models import Q
 from pgvector.django import CosineDistance
@@ -16,6 +17,7 @@ from pgvector.django import CosineDistance
 from core.embeddings import embed_texts
 from core.models import DocumentChunk, Page
 from core.rag_config import (
+    RAG_BM25_HYBRID,
     RAG_CROSS_ENCODER_RERANK,
     RAG_CROSS_ENCODER_WEIGHT,
     RAG_KEYWORD_BOOST,
@@ -394,6 +396,28 @@ def _embedding_variants(composed: str, raw_user: str | None) -> list[str]:
     return out
 
 
+def _bm25_search(query: str, top_n: int = 20) -> list[tuple[int, float]]:
+    """PostgreSQL full-text search (BM25-like ranking) on chunk content + title."""
+    if not query or not query.strip():
+        return []
+    try:
+        words = re.findall(r"[a-zA-ZğüşıöçĞÜŞİÖÇ]{3,}", query)
+        if not words:
+            return []
+        search_str = " | ".join(words[:10])
+        sq = SearchQuery(search_str, search_type="raw")
+        sv = SearchVector("content", weight="A") + SearchVector("page_title", weight="B")
+        results = (
+            DocumentChunk.objects.annotate(rank=SearchRank(sv, sq))
+            .filter(rank__gt=0.01)
+            .order_by("-rank")[:top_n]
+        )
+        return [(ch.pk, float(ch.rank)) for ch in results]
+    except Exception:
+        logger.debug("BM25 search failed, skipping", exc_info=True)
+        return []
+
+
 def _merge_best_distances(vectors: list[list[float]], per_vector_pool: int) -> dict[int, float]:
     best: dict[int, float] = {}
     for vec in vectors:
@@ -578,6 +602,19 @@ def search_document_chunks(
     t_vec = time.time()
     best = _merge_best_distances(vectors, per_pool)
     logger.info("RAG vector search: %.2fs (pool=%d)", time.time() - t_vec, per_pool)
+
+    # BM25 hybrid: merge full-text search results into vector pool
+    bm25_hits = []
+    t_bm25 = time.time()
+    if RAG_BM25_HYBRID:
+        bm25_raw_q = (raw_user_query or composed_query or "").strip()
+        bm25_hits = _bm25_search(bm25_raw_q, top_n=20)
+    for pk, rank in bm25_hits:
+        if pk not in best:
+            best[pk] = 0.55  # inject with moderate distance so reranker can promote
+    if bm25_hits:
+        logger.info("RAG BM25 hybrid: %.2fs (%d hits, %d new)", time.time() - t_bm25, len(bm25_hits), sum(1 for pk, _ in bm25_hits if pk not in best))
+
     if not best:
         return "", [], False, True
 
