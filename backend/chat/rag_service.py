@@ -13,6 +13,7 @@ from core.rag_keywords import (
     extract_target_entity_key,
     faculty_roster_path_filter,
     fee_tuition_intent,
+    international_student_apply_intent,
 )
 from core.rag_retrieval import search_document_chunks
 
@@ -89,7 +90,11 @@ SYSTEM_RAG_USER_WRAPPER = (
     "If the named program is not mentioned in the excerpts, say it is not listed in this retrieved text. "
     "If the program is named but a fee figure is not next to it in the excerpts, do not invent an amount; "
     "you may use the rule 6 refusal for the missing number only, not to deny that the program exists. "
-    "Do not borrow numbers from unrelated passages."
+    "Do not borrow numbers from unrelated passages. "
+    "(11) Admissions / apply (especially for international or foreign students): do not treat tuition, fee, or "
+    "price pages as proof that someone may apply unless the same excerpt clearly states who may apply. "
+    "Do not write vague padding such as “criteria are not specified in detail” or implied eligibility. "
+    "If excerpts do not clearly answer, use rule 6 (exact refusal) with no extra sentences or fake offers."
 )
 
 SYSTEM_SMALLTALK = (
@@ -218,6 +223,17 @@ def compose_rag_search_query(current_message: str, prior_user_messages: list[str
             f"{merged}\n"
             "OBS Bologna course catalog curriculum syllabus ECTS program outcomes"
         )
+    elif international_student_apply_intent(merged):
+        merged = (
+            f"{merged}\n"
+            "Acıbadem University international students admission application requirements "
+            "how to apply international office yabancı öğrenci başvuru yükseköğretim kabul"
+        )
+        if fee_tuition_intent(merged):
+            merged = (
+                f"{merged}\n"
+                "international student tuition and fees (only if the user also asked about cost or price)"
+            )
     elif RAG_FEE_TUITION_INTENT_RE.search(merged):
         # Default: all faculties / programs (crawl may hold one page with many program rows).
         # Narrow to one department only when a known dept phrase matches AND user did not ask for
@@ -438,6 +454,15 @@ def prepare_chat_prompts(rag_query: str, user_plain: str) -> tuple[str, str, dic
                 "Include only people who appear in that department’s staff list text. Do not add faculty "
                 "from Psychology, Biomedical, Medicine, or other units unless the staff list text itself "
                 "names them as part of the same department roster—do not invent or import names from memory."
+            )
+        if international_student_apply_intent(user_plain):
+            system += (
+                "\n\nADMISSIONS (international / foreign): The user is asking whether international students "
+                "may apply or about application/admissions for them. (a) Do not use tuition/fee/cost excerpts as "
+                "evidence for who may apply unless those same lines explicitly say so. (b) Do not invent "
+                "“eligibility,” “criteria,” or “undergraduate applications” unless the excerpts state them. "
+                "(c) If the excerpts do not clearly answer, use rule 6 only—no warm-up, no closing offer, no "
+                "invitation to explore details that are not in the text."
             )
         if fee_tuition_intent(user_plain) and faculty_roster_path_filter(
             user_plain

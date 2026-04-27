@@ -1,12 +1,14 @@
 """Shared HTML → title + plain text extraction for crawlers."""
+import os
 import re
 
 from bs4 import BeautifulSoup, NavigableString, Tag
 
-MAX_CONTENT_CHARS = 5000
+# Keep enough page body so late sections (e.g. scholarships) are not truncated.
+MAX_CONTENT_CHARS = max(3000, int(os.environ.get("CRAWL_MAX_CONTENT_CHARS", "20000")))
 # Bounds for JSON storage and embedding prep (per unit / per page).
-_MAX_UNIT_CHARS = 1500
-_MAX_UNITS_PER_PAGE = 120
+_MAX_UNIT_CHARS = max(300, int(os.environ.get("CRAWL_MAX_UNIT_CHARS", "1500")))
+_MAX_UNITS_PER_PAGE = max(80, int(os.environ.get("CRAWL_MAX_UNITS_PER_PAGE", "320")))
 
 
 def _strip_noise_tags(soup: BeautifulSoup) -> None:

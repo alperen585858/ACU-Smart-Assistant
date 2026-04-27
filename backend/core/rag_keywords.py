@@ -226,6 +226,39 @@ def department_snippet_anchor_phrases(query: str) -> list[str]:
     return [label] if label else []
 
 
+def fee_snippet_anchor_phrases(query: str) -> list[str]:
+    """
+    Phrases to center fee-related snippets on for broad queries where target text
+    can sit far from chunk starts (e.g., scholarship sections on tuition pages).
+    """
+    q = (query or "").lower()
+    if not q or not fee_tuition_intent(q):
+        return []
+    phrases: list[str] = []
+    if re.search(r"\bscholar(ship|ships)?\b|\bburs(lar[ıi]?)?\b", q):
+        phrases.extend(
+            [
+                "Scholarship",
+                "Scholarships",
+                "Tuition Fees and Scholarships",
+                "Burs",
+                "Burslar",
+                "Ücret ve Burs",
+                "Öğrenim Ücretleri ve Burslar",
+            ]
+        )
+    if re.search(r"\bpayment|ödeme|odeme|installment|taksit\b", q):
+        phrases.extend(["Payment", "Ödeme", "Taksit", "Payment Plan"])
+    seen: set[str] = set()
+    out: list[str] = []
+    for p in phrases:
+        k = p.casefold()
+        if k not in seen:
+            seen.add(k)
+            out.append(p)
+    return out
+
+
 # Deans, rector, university leadership (not the same as “teachers / academic staff list”).
 RAG_LEADERSHIP_INTENT_RE = re.compile(
     r"\b(dean|deans|dekan|rector|rektör|rectorate|dekanlık|dekanlik|provost)\b",
@@ -292,6 +325,60 @@ def faculty_list_embedding_phrase(query: str) -> str | None:
     return (
         f"Acıbadem University {label} department academic staff list faculty members "
         f"professors and teaching staff"
+    )
+
+
+def international_student_apply_intent(text: str) -> bool:
+    """
+    User asks whether international/foreign students may apply, or about applications/admissions
+    in that context (not the same as “international student tuition / fees” alone).
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    tl = t.lower()
+    intl = bool(
+        re.search(
+            r"\binternational\s+students?|\bforeign\s+students?|\boverseas\s+students?|"
+            r"yabanc[ıi]\s*ö[ğg]renci|yabanci\s*ogrenci",
+            tl,
+        )
+    ) or re.search(
+        r"\b(international|foreign|yabanc[ıi]|overseas)\b.+\b(apply|application|admissions?|admission|başvuru|basvuru)\b|"
+        r"\b(apply|application|admissions?|admission|başvuru|basvuru)\b.+\b(international|foreign|yabanc[ıi]|overseas)\b",
+        tl,
+    )
+    apply_ = bool(
+        re.search(
+            r"\b(apply|application|admissions?|admission|enroll|başvuru|basvuru|kabul|eligible)\b|"
+            r"can\s+(i|we|they|you)\b.*\bapply\b|"
+            r"can\s+international\s+students?\b.*\bapply|"
+            r"\b(international|foreign)\b.*\bapply\??$",
+            tl,
+        )
+    )
+    if not (intl and apply_):
+        return False
+    # Pure fee/price without an apply/admission angle — not this intent
+    if re.search(
+        r"\b(tuition|ücret|fee|fees|how\s+much|price|prices|cost|payment|ödeme|odeme)\b",
+        tl,
+    ) and not re.search(
+        r"\b(apply|application|admissions?|admission|başvuru|basvuru|kabul|eligible|enroll)\b",
+        tl,
+    ):
+        return False
+    return True
+
+
+def international_admissions_embedding_phrase(query: str) -> str | None:
+    if not (query or "").strip():
+        return None
+    if not international_student_apply_intent(query):
+        return None
+    return (
+        "Acıbadem Mehmet Ali Aydınlar University international students admission application "
+        "how to apply requirements deadlines English language proficiency yabancı öğrenci başvuru kabul"
     )
 
 
