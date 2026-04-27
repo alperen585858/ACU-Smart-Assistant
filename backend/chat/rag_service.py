@@ -2,11 +2,13 @@ import os
 import re
 
 from core.rag_keywords import (
+    RAG_ACADEMIC_OBS_INTENT_RE,
     RAG_BROAD_FEE_LIST_INTENT_RE,
     RAG_DEPT_OR_FACULTY_INTENT_RE,
     RAG_FACULTY_ROSTER_INTENT_RE,
     RAG_FEE_TUITION_INTENT_RE,
     RAG_LEADERSHIP_INTENT_RE,
+    RAG_LOCATION_CONTACT_INTENT_RE,
     RAG_STEM_OR_ENGINEERING_INTENT_RE,
     extract_target_entity_key,
     faculty_roster_path_filter,
@@ -205,13 +207,17 @@ def compose_rag_search_query(current_message: str, prior_user_messages: list[str
     ):
         merged = f"{merged}\nAcıbadem Mehmet Ali Aydınlar University (ACU)"
     # Apply at most one intent-specific keyword boost to avoid diluting embeddings.
-    if re.search(
-        r"adres|address|konum|location|postal|tam\s*adres|kamp[uü]s|campus|"
-        r"\bnerede\b|where\s+is|iletişim|contact\b|ulaşım|how\s+to\s+get",
-        merged,
-        re.IGNORECASE,
-    ):
-        merged = f"{merged}\npostal address campus location contact Istanbul Kerem Aydinlar"
+    if RAG_LOCATION_CONTACT_INTENT_RE.search(merged):
+        merged = (
+            f"{merged}\n"
+            "postal address campus location contact communication transportation directions "
+            "how to get Istanbul Kerem Aydinlar"
+        )
+    elif RAG_ACADEMIC_OBS_INTENT_RE.search(merged):
+        merged = (
+            f"{merged}\n"
+            "OBS Bologna course catalog curriculum syllabus ECTS program outcomes"
+        )
     elif RAG_FEE_TUITION_INTENT_RE.search(merged):
         # Default: all faculties / programs (crawl may hold one page with many program rows).
         # Narrow to one department only when a known dept phrase matches AND user did not ask for

@@ -12,10 +12,10 @@ logger = logging.getLogger("chat.llm")
 LLM_BACKEND = os.environ.get("LLM_BACKEND", "ollama")
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2:3b")
-# Long RAG prompts need a wide ctx; list-style answers need headroom (defaults align with docker-compose).
-OLLAMA_NUM_PREDICT = int(os.environ.get("OLLAMA_NUM_PREDICT", "512"))
+# Keep responses concise by default to reduce local inference latency.
+OLLAMA_NUM_PREDICT = int(os.environ.get("OLLAMA_NUM_PREDICT", "144"))
 OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "8192"))
-OLLAMA_HTTP_TIMEOUT = int(os.environ.get("OLLAMA_HTTP_TIMEOUT", "240"))
+OLLAMA_HTTP_TIMEOUT = int(os.environ.get("OLLAMA_HTTP_TIMEOUT", "120"))
 OLLAMA_KEEP_ALIVE = os.environ.get("OLLAMA_KEEP_ALIVE", "30m")
 OLLAMA_TEMPERATURE = float(os.environ.get("OLLAMA_TEMPERATURE", "0.15"))
 OLLAMA_TOP_P = float(os.environ.get("OLLAMA_TOP_P", "0.85"))
@@ -110,7 +110,7 @@ def _call_ollama(
         {
             "model": OLLAMA_MODEL,
             "messages": ollama_messages,
-            "stream": False,
+            "stream": True,
             "keep_alive": OLLAMA_KEEP_ALIVE,
             "options": opt,
         }
@@ -123,7 +123,7 @@ def _call_ollama(
     )
     try:
         with urllib.request.urlopen(req, timeout=OLLAMA_HTTP_TIMEOUT) as resp:
-            data = json.loads(resp.read().decode())
+            raw = resp.read().decode()
     except urllib.error.HTTPError as e:
         detail = e.read().decode(errors="replace")
         logger.error("Ollama HTTP %d: %s", e.code, detail[:500])
@@ -138,7 +138,31 @@ def _call_ollama(
         logger.error("Ollama socket timeout")
         return None, "Response timed out. Please try again."
 
-    reply = (data.get("message") or {}).get("content", "").strip()
+    # Ollama stream mode returns NDJSON chunks; concatenate message parts.
+    reply_parts: list[str] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        piece = (obj.get("message") or {}).get("content", "")
+        if piece:
+            reply_parts.append(piece)
+
+    # Fallback for non-streaming/single-object JSON responses.
+    if not reply_parts:
+        try:
+            data = json.loads(raw)
+            piece = (data.get("message") or {}).get("content", "")
+            if piece:
+                reply_parts.append(piece)
+        except json.JSONDecodeError:
+            pass
+
+    reply = "".join(reply_parts).strip()
     if not reply:
         return None, "Empty model response"
     return reply, None

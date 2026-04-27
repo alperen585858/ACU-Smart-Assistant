@@ -40,8 +40,10 @@ from core.rag_config import (
     rag_source_url_blocklist_substrings,
 )
 from core.rag_keywords import (
+    RAG_ACADEMIC_OBS_INTENT_RE,
     RAG_FACULTY_ROSTER_INTENT_RE,
     RAG_LEADERSHIP_INTENT_RE,
+    RAG_LOCATION_CONTACT_INTENT_RE,
     RAG_STEM_OR_ENGINEERING_INTENT_RE,
     department_snippet_anchor_phrases,
     extract_target_entity_key,
@@ -159,6 +161,8 @@ def _intent_boost(composed_query: str, url: str, title: str, content: str) -> in
     q = (composed_query or "").lower()
     blob = f"{url or ''} {title or ''} {content or ''}".lower()
     boost = 0
+    location_intent = bool(RAG_LOCATION_CONTACT_INTENT_RE.search(q))
+    academic_obs_intent = bool(RAG_ACADEMIC_OBS_INTENT_RE.search(q))
     if RAG_LEADERSHIP_INTENT_RE.search(q):
         if _LEADERSHIP_CONTENT_RE.search(blob):
             boost += 14
@@ -170,6 +174,12 @@ def _intent_boost(composed_query: str, url: str, title: str, content: str) -> in
                 if en_name in blob or tr_name in blob:
                     boost += 5
                 break
+    if location_intent and _LOCATION_AUTH_HINT_RE.search(blob):
+        boost += 10
+    if location_intent and _OBS_URL_RE.search(blob):
+        boost -= 8
+    if academic_obs_intent and _OBS_URL_RE.search(blob):
+        boost += 7
     return boost
 
 
@@ -468,6 +478,16 @@ _ENTITY_NOISE_SOURCE_RE = re.compile(
     re.IGNORECASE,
 )
 
+_OBS_URL_RE = re.compile(
+    r"obs\.acibadem\.edu\.tr|/oibs/|bologna|dynconpage|course",
+    re.IGNORECASE,
+)
+
+_LOCATION_AUTH_HINT_RE = re.compile(
+    r"contact|iletisim|iletişim|address|adres|transport|ula[şs][ıi]m|campus|konum|location",
+    re.IGNORECASE,
+)
+
 
 def _chunk_bears_fee_grounding(ch: DocumentChunk) -> bool:
     u = f"{ch.source_url or ''} {ch.page_title or ''}"
@@ -493,6 +513,21 @@ def _stem_noise_penalty(url: str, title: str) -> float:
     if _STEM_LOW_VALUE_PAGE_RE.search(blob):
         return RAG_STEM_NOISE_URL_PENALTY
     return 0.0
+
+
+def _obs_priority_adjustment(url: str, title: str, *, location_intent: bool, academic_obs_intent: bool) -> float:
+    """
+    Positive => penalize (demote), negative => promote.
+    OBS remains available globally; only priority changes by intent.
+    """
+    blob = f"{url or ''} {title or ''}"
+    if not _OBS_URL_RE.search(blob):
+        return 0.0
+    if location_intent:
+        return 0.22
+    if academic_obs_intent:
+        return -0.10
+    return 0.03
 
 
 def _rerank_items(
@@ -586,6 +621,8 @@ def search_document_chunks(
 
     q_blob = f"{composed_query} {raw_user_query or ''}".strip()
     fee_intent = fee_tuition_intent(q_blob)
+    location_intent = bool(RAG_LOCATION_CONTACT_INTENT_RE.search(q_blob))
+    academic_obs_intent = bool(RAG_ACADEMIC_OBS_INTENT_RE.search(q_blob))
     target_entity = extract_target_entity_key(q_blob)
     target_alias = target_entity_aliases(target_entity)
     competitor_alias = target_entity_competitor_aliases(target_entity)
@@ -874,6 +911,12 @@ def search_document_chunks(
             d = min(d, 0.08)
         if int(ch.pk) in faculty_roster_pks:
             d = min(d, 0.12)
+        d += _obs_priority_adjustment(
+            str(ch.source_url or ""),
+            str(ch.page_title or ""),
+            location_intent=location_intent,
+            academic_obs_intent=academic_obs_intent,
+        )
         return d
 
     ranked.sort(key=lambda it: (_effective_sort_distance(it[0], it[1]), it[0].pk))
@@ -928,6 +971,64 @@ def search_document_chunks(
                     f"{body_um[:12000]}"
                 )
 
+    loc_block = ""
+    loc_sources: list[dict] = []
+    if location_intent and not fee_intent:
+        loc_q = (
+            Q(url__icontains="communication-and-transportation")
+            | Q(url__icontains="/kayit/iletisim/ulasim")
+            | Q(url__icontains="contact-details")
+            | Q(url__icontains="/contact-us")
+            | Q(url__icontains="/contact")
+            | Q(url__icontains="/iletisim")
+            | Q(url__icontains="transport")
+            | Q(title__icontains="Communication and Transportation")
+            | Q(title__icontains="Contact Details")
+            | Q(title__icontains="Contact")
+        )
+        loc_pages_all = list(
+            Page.objects.filter(loc_q)
+            .exclude(url__icontains="obs.")
+            .exclude(url__icontains="/news/")
+            .exclude(url__icontains="/events/")
+            .only("url", "title", "content")[:30]
+        )
+        def _loc_priority(p: Page) -> tuple[int, int]:
+            u = str(p.url or "").lower()
+            t = str(p.title or "").lower()
+            pri = 90
+            if "communication-and-transportation" in u or "/kayit/iletisim/ulasim" in u:
+                pri = 0
+            elif "contact-details" in u:
+                pri = 1
+            elif "contact details" in t:
+                pri = 2
+            elif "/contact-us" in u:
+                pri = 3
+            elif "/contact" in u or "/iletisim" in u:
+                pri = 4
+            elif "transport" in u:
+                pri = 5
+            return (pri, len(u))
+
+        loc_pages = sorted(loc_pages_all, key=_loc_priority)[:2]
+        loc_parts: list[str] = []
+        for p in loc_pages:
+            body = (p.content or "").strip()
+            if not body:
+                continue
+            title = str(p.title or p.url or "")[:200]
+            loc_parts.append(f"[{title} — location/contact source]\n{body[:1200]}")
+            loc_sources.append(
+                {
+                    "url": str(p.url or ""),
+                    "title": title,
+                    "cosine_distance": 0.0,
+                }
+            )
+        if loc_parts:
+            loc_block = "\n\n".join(loc_parts)
+
     # Full academic-staff page + "list all teachers" query: do not mix other URLs (news, other
     # departments, site-wide "Akademik" pages)—the model otherwise blends unrelated names.
     faculty_inject_only = bool(
@@ -965,6 +1066,14 @@ def search_document_chunks(
             len(mgmt_block),
         )
         return mgmt_block, src_mgmt, used_relaxed, True
+
+    if loc_block and loc_sources:
+        logger.info(
+            "RAG location inject-only context (pages=%d, chars=%d)",
+            len(loc_sources),
+            len(loc_block),
+        )
+        return loc_block, loc_sources, used_relaxed, True
 
     max_context_chars = (
         max(RAG_MAX_CHARS, 9000) if inject_block else RAG_MAX_CHARS
@@ -1050,6 +1159,12 @@ def search_document_chunks(
                 break
 
     out = "\n\n".join(context_parts)
+    if loc_block:
+        out = f"{loc_block}\n\n{out}" if out else loc_block
+        existing_urls = {str(s.get("url") or "") for s in sources}
+        prepend = [s for s in loc_sources if str(s.get("url") or "") not in existing_urls]
+        if prepend:
+            sources = prepend + sources
     if inject_block:
         out = f"{inject_block}\n\n{out}" if out else inject_block
         if inject_skip_url and not any(

@@ -24,6 +24,20 @@ RAG_STEM_OR_ENGINEERING_INTENT_RE = re.compile(
     re.IGNORECASE,
 )
 
+RAG_LOCATION_CONTACT_INTENT_RE = re.compile(
+    r"\b(where\s+is|location|address|postal|contact|how\s+to\s+get|how\s+can\s+i\s+reach|reach\b|directions?|"
+    r"transport|transportation|campus\s+location|communication\s+and\s+transportation|"
+    r"nerede|konum|adres|iletişim|iletisim|ulaşım|ulasim|kamp[uü]s\s+konum)\b",
+    re.IGNORECASE,
+)
+
+RAG_ACADEMIC_OBS_INTENT_RE = re.compile(
+    r"\b(obs|oibs|bologna|course|courses|curriculum|syllabus|ects|catalog|"
+    r"programme?\s+structure|program\s+outcomes?|learning\s+outcomes?|"
+    r"ders|dersler|müfredat|mufredat|akts|katalog|kazan[ıi]m)\b",
+    re.IGNORECASE,
+)
+
 # "Who are the teachers?" / "faculty" — prefer department /academic-staff/ pages in RAG.
 RAG_FACULTY_ROSTER_INTENT_RE = re.compile(
     r"\bteachers?\b|teaching\s+staff|"
