@@ -13,6 +13,9 @@ from core.rag_keywords import (
     extract_target_entity_key,
     faculty_roster_path_filter,
     fee_tuition_intent,
+    graduate_or_postgrad_admissions_intent,
+    international_admissions_default_undergraduate_only,
+    international_application_requirements_page_intent,
     international_student_apply_intent,
 )
 from core.rag_retrieval import search_document_chunks
@@ -93,8 +96,17 @@ SYSTEM_RAG_USER_WRAPPER = (
     "Do not borrow numbers from unrelated passages. "
     "(11) Admissions / apply (especially for international or foreign students): do not treat tuition, fee, or "
     "price pages as proof that someone may apply unless the same excerpt clearly states who may apply. "
-    "Do not write vague padding such as “criteria are not specified in detail” or implied eligibility. "
-    "If excerpts do not clearly answer, use rule 6 (exact refusal) with no extra sentences or fake offers."
+    "If excerpts include an eligibility or “who can apply” list, summarize those points; do not tell the user "
+    "to navigate the website. Do not write vague padding such as “criteria are not specified in detail” or "
+    "implied eligibility. If excerpts do not clearly answer, use rule 6 (exact refusal) with no extra sentences "
+    "or fake offers. "
+    "(12) When excerpts list required diplomas/exams and minimum scores in a table, report those rows with the "
+    "same names and numbers shown; do not collapse into vague wording or say details are missing if they are in "
+    "the text; do not add graduate or master’s rules unless the excerpt is about that level. "
+    "(13) If the user did not ask for graduate studies (master’s, PhD, graduate program), do not require that "
+    "applicants already hold a specific bachelor’s or university degree in a subject; international "
+    "undergraduate admission is normally about high school completion and listed entrance exams, unless the "
+    "excerpts clearly refer to the level the user asked for."
 )
 
 SYSTEM_SMALLTALK = (
@@ -229,10 +241,22 @@ def compose_rag_search_query(current_message: str, prior_user_messages: list[str
             "Acıbadem University international students admission application requirements "
             "how to apply international office yabancı öğrenci başvuru yükseköğretim kabul"
         )
+        if not graduate_or_postgrad_admissions_intent(merged):
+            merged = (
+                f"{merged}\n"
+                "undergraduate first-cycle international admission (pre-university high school diploma and "
+                "entrance exams), not master PhD or graduate school unless the user asked for those"
+            )
         if fee_tuition_intent(merged):
             merged = (
                 f"{merged}\n"
                 "international student tuition and fees (only if the user also asked about cost or price)"
+            )
+        if international_application_requirements_page_intent(merged):
+            merged = (
+                f"{merged}\n"
+                "Acıbadem undergraduate international Application Requirements table "
+                "required diploma exam TR-YÖS SAT GCE ACT AP IB School of Medicine English Turkish program scores"
             )
     elif RAG_FEE_TUITION_INTENT_RE.search(merged):
         # Default: all faculties / programs (crawl may hold one page with many program rows).
@@ -457,12 +481,32 @@ def prepare_chat_prompts(rag_query: str, user_plain: str) -> tuple[str, str, dic
             )
         if international_student_apply_intent(user_plain):
             system += (
-                "\n\nADMISSIONS (international / foreign): The user is asking whether international students "
-                "may apply or about application/admissions for them. (a) Do not use tuition/fee/cost excerpts as "
-                "evidence for who may apply unless those same lines explicitly say so. (b) Do not invent "
-                "“eligibility,” “criteria,” or “undergraduate applications” unless the excerpts state them. "
-                "(c) If the excerpts do not clearly answer, use rule 6 only—no warm-up, no closing offer, no "
-                "invitation to explore details that are not in the text."
+                "\n\nADMISSIONS (international / foreign): The user is asking about applying, requirements, or "
+                "eligibility for international applicants. (a) If the excerpts list who can or cannot apply, "
+                "base your answer on that list in short bullet points. (b) Do not use tuition/fee pages as the "
+                "main evidence for who may apply. (c) Do not tell the user to browse the site, open menus, or "
+                "“go to the International section” — state only what the excerpts contain. (d) Do not name "
+                "schools, exams, or countries unless they appear in the excerpts. (e) If the excerpts do not list "
+                "requirements, use rule 6 only—no filler."
+            )
+        if international_application_requirements_page_intent(user_plain):
+            system += (
+                "\n\nINTERNATIONAL UNDERGRADUATE APPLICATION REQUIREMENTS: If the Context includes a “REQUIRED "
+                "DIPLOMA/EXAM” (or similar) list or table with School of Medicine / English / Turkish program "
+                "minimum scores, you MUST summarize using those exact exam or diploma types and the scores shown — "
+                "do not collapse into “various diplomas” or “no specific details.” Do not add graduate, associate, "
+                "or language-test rules unless they appear in the same Context block. You may add one sentence that "
+                "meeting the table does not guarantee admission if that sentence appears in the excerpt."
+            )
+        if international_admissions_default_undergraduate_only(user_plain):
+            system += (
+                "\n\nUNDERGRADUATE-FOCUS (the user did not ask for master’s, PhD, or graduate program): Answer as "
+                "if they are asking about first university entry (typical: high school / secondary completion + "
+                "entrance exam requirements). **Do not** state that the applicant must already have a **bachelor’s or "
+                "university degree in a subject** (e.g. Chemistry) — that is usually graduate admissions language. "
+                "If a Context line looks like a graduate or postgraduate requirement, do not use it for this question "
+                "unless the user explicitly asked about that level. Prefer the undergraduate / international table "
+                "excerpts only."
             )
         if fee_tuition_intent(user_plain) and faculty_roster_path_filter(
             user_plain

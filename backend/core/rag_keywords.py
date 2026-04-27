@@ -273,6 +273,18 @@ RAG_FEE_TUITION_INTENT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# User explicitly asked about master’s/PhD/graduate — do not default to UG intl. admission rules.
+RAG_GRADUATE_ADMISSIONS_INTENT_RE = re.compile(
+    r"\b(graduate|post-?grad|postgraduate|master[’']?s\b|\bmba\b|m\.?\s*sc\.?\b|m\.?a\.?\b|"
+    r"ph\.?d|doktora|tez|yüksek\s+lisans|yuksek\s+lisans|lisansüstü|lisansustu|"
+    r"doctoral|doctorate|graduate\s+school|graduate\s+program)\b|"
+    r"\b(masters?|ms\b|phd|graduate|doktora|yüksek)\b.*\b(apply|admission|applicant|requirement)\b|"
+    r"\b(apply|admission|applicant|requirement|international)\b.*\b("
+    r"masters?|phd|graduate|doktora|master[’']s|yüksek|postgrad|post-?grad"
+    r")\b",
+    re.IGNORECASE,
+)
+
 # User wants university-wide or full fee list, not a single department.
 RAG_BROAD_FEE_LIST_INTENT_RE = re.compile(
     r"\b(tüm|bütün|butun|hepsi|all|every|"
@@ -287,6 +299,24 @@ RAG_BROAD_FEE_LIST_INTENT_RE = re.compile(
 
 def fee_tuition_intent(text: str) -> bool:
     return bool(RAG_FEE_TUITION_INTENT_RE.search(text or ""))
+
+
+def graduate_or_postgrad_admissions_intent(text: str) -> bool:
+    """User is asking about graduate / master’s / PhD admissions (not the default UG intl. case)."""
+    return bool(RAG_GRADUATE_ADMISSIONS_INTENT_RE.search(text or ""))
+
+
+def international_admissions_default_undergraduate_only(text: str) -> bool:
+    """
+    International admission/requirements question without explicit master’s/PhD/graduate focus.
+    In this mode, do not treat graduate-program requirements as applying to the user’s question.
+    """
+    t = (text or "").strip()
+    if not t or graduate_or_postgrad_admissions_intent(t):
+        return False
+    if international_application_requirements_page_intent(t):
+        return True
+    return bool(international_student_apply_intent(t))
 
 
 def is_university_wide_fee_rag_query(text: str) -> bool:
@@ -330,8 +360,8 @@ def faculty_list_embedding_phrase(query: str) -> str | None:
 
 def international_student_apply_intent(text: str) -> bool:
     """
-    User asks whether international/foreign students may apply, or about applications/admissions
-    in that context (not the same as “international student tuition / fees” alone).
+    International/foreign-student questions about: applying, admissions, requirements,
+    or eligibility (not “international student tuition / fees” alone).
     """
     t = (text or "").strip()
     if not t:
@@ -339,36 +369,68 @@ def international_student_apply_intent(text: str) -> bool:
     tl = t.lower()
     intl = bool(
         re.search(
-            r"\binternational\s+students?|\bforeign\s+students?|\boverseas\s+students?|"
+            r"\binternational\s+(students?|applicants?|applicant)\b|"
+            r"\bforeign\s+(students?|applicants?)\b|\boverseas\s+students?|"
             r"yabanc[ıi]\s*ö[ğg]renci|yabanci\s*ogrenci",
             tl,
         )
     ) or re.search(
-        r"\b(international|foreign|yabanc[ıi]|overseas)\b.+\b(apply|application|admissions?|admission|başvuru|basvuru)\b|"
-        r"\b(apply|application|admissions?|admission|başvuru|basvuru)\b.+\b(international|foreign|yabanc[ıi]|overseas)\b",
+        r"\b(international|foreign|yabanc[ıi]|overseas)\b.+\b("
+        r"apply|application|admissions?|admission|başvuru|basvuru|"
+        r"requirement|requirements|eligibility|criteria"
+        r")\b|"
+        r"\b(apply|application|admissions?|admission|başvuru|basvuru|"
+        r"requirement|requirements|eligibility|criteria)\b.+\b("
+        r"international|foreign|yabanc[ıi]|overseas"
+        r")\b",
         tl,
     )
-    apply_ = bool(
+    topic = bool(
         re.search(
-            r"\b(apply|application|admissions?|admission|enroll|başvuru|basvuru|kabul|eligible)\b|"
-            r"can\s+(i|we|they|you)\b.*\bapply\b|"
-            r"can\s+international\s+students?\b.*\bapply|"
-            r"\b(international|foreign)\b.*\bapply\??$",
+            r"\b(apply|application|admissions?|admission|enroll|başvuru|basvuru|kabul|"
+            r"eligible|eligibility|requirement|requirements|criteria|qualif|prerequisite|documents?)\b|"
+            r"what\s+are\s+the\s+requirements|what\s+do\s+(i|we)\s+need|"
+            r"who\s+can\s+apply|who\s+cannot\s+apply",
             tl,
         )
+    ) or re.search(
+        r"can\s+(i|we|they|you)\b.*\bapply\b|"
+        r"can\s+international\s+students?\b.*\bapply|"
+        r"\b(international|foreign)\b.*\bapply\??$",
+        tl,
     )
-    if not (intl and apply_):
+    if not (intl and topic):
         return False
     # Pure fee/price without an apply/admission angle — not this intent
     if re.search(
         r"\b(tuition|ücret|fee|fees|how\s+much|price|prices|cost|payment|ödeme|odeme)\b",
         tl,
     ) and not re.search(
-        r"\b(apply|application|admissions?|admission|başvuru|basvuru|kabul|eligible|enroll)\b",
+        r"\b(apply|application|admissions?|admission|başvuru|basvuru|kabul|eligible|enroll|"
+        r"requirement|requirements|eligibility|criteria)\b",
         tl,
     ):
         return False
     return True
+
+
+def international_application_requirements_page_intent(text: str) -> bool:
+    """
+    User asks for concrete international admission / application requirements
+    (diplomas, exams, scores — the main table on the Application Requirements page).
+    """
+    if not international_student_apply_intent(text):
+        return False
+    tl = (text or "").lower()
+    return bool(
+        re.search(
+            r"\b(requirement|requirements|diploma|diplomas|exams?|entrance|tests?|scores?|"
+            r"sat\b|gce|act\b|\bap\b|tr-y|yös|yos|tawjihi|baccalaur|abitur|matura|"
+            r"transcripts?|national\s+high\s+school|how\s+to\s+get\s+in)\b|"
+            r"what\s+are\s+the\s+requirements|what\s+do\s+(i|we)\s+need",
+            tl,
+        )
+    )
 
 
 def international_admissions_embedding_phrase(query: str) -> str | None:
@@ -376,6 +438,11 @@ def international_admissions_embedding_phrase(query: str) -> str | None:
         return None
     if not international_student_apply_intent(query):
         return None
+    if international_application_requirements_page_intent(query):
+        return (
+            "Acıbadem University international students undergraduate Application Requirements "
+            "required diploma exam table SAT GCE ACT AP IB National High School TR-YÖS School of Medicine English Turkish program minimum scores"
+        )
     return (
         "Acıbadem Mehmet Ali Aydınlar University international students admission application "
         "how to apply requirements deadlines English language proficiency yabancı öğrenci başvuru kabul"

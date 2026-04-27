@@ -51,7 +51,9 @@ from core.rag_keywords import (
     faculty_list_embedding_phrase,
     faculty_roster_path_filter,
     fee_tuition_intent,
+    international_admissions_default_undergraduate_only,
     international_admissions_embedding_phrase,
+    international_application_requirements_page_intent,
     international_student_apply_intent,
     is_university_wide_fee_rag_query,
     leadership_embedding_phrase,
@@ -485,6 +487,13 @@ _SCHOLARSHIP_TEXT_EVIDENCE = re.compile(
     re.IGNORECASE,
 )
 
+# International UG default: demote / skip graduate-application sources when the user did not ask for graduate.
+_GRADUATE_INTL_SOURCE_HINT = re.compile(
+    r"graduate|post-?grad|yuksek\s*lisans|yüksek\s+lisans|master[’'s]?\s*program|"
+    r"phd|doktora|/graduate/|/graduate-|\btez\b|mba\s*admission|post-?grad",
+    re.IGNORECASE,
+)
+
 _ENTITY_NOISE_SOURCE_RE = re.compile(
     r"career|kariyer|event|etkinlik|news|haber|announcement|duyuru",
     re.IGNORECASE,
@@ -639,6 +648,8 @@ def search_document_chunks(
     q_blob = f"{composed_query} {raw_user_query or ''}".strip()
     fee_intent = fee_tuition_intent(q_blob)
     intl_apply_intent = international_student_apply_intent(q_blob)
+    appreq_intent = international_application_requirements_page_intent(q_blob)
+    intl_ug_only = international_admissions_default_undergraduate_only(q_blob)
     scholarship_intent = bool(_SCHOLARSHIP_QUERY_RE.search(q_blob))
     location_intent = bool(RAG_LOCATION_CONTACT_INTENT_RE.search(q_blob))
     academic_obs_intent = bool(RAG_ACADEMIC_OBS_INTENT_RE.search(q_blob))
@@ -945,6 +956,10 @@ def search_document_chunks(
             location_intent=location_intent,
             academic_obs_intent=academic_obs_intent,
         )
+        if intl_ug_only and _GRADUATE_INTL_SOURCE_HINT.search(
+            f"{ch.source_url or ''} {ch.page_title or ''}"
+        ):
+            d += 0.18
         return d
 
     ranked.sort(key=lambda it: (_effective_sort_distance(it[0], it[1]), it[0].pk))
@@ -1003,6 +1018,9 @@ def search_document_chunks(
     loc_sources: list[dict] = []
     intl_block = ""
     intl_sources: list[dict] = []
+    appreq_block = ""
+    appreq_sources: list[dict] = []
+    appreq_skip: set[str] = set()
     if location_intent and not fee_intent:
         loc_q = (
             Q(url__icontains="communication-and-transportation")
@@ -1059,9 +1077,33 @@ def search_document_chunks(
         if loc_parts:
             loc_block = "\n\n".join(loc_parts)
 
+    if appreq_intent:
+        p_ar = (
+            Page.objects.filter(url__icontains="application-requirements")
+            .exclude(url__icontains="obs.")
+            .only("url", "title", "content")
+            .first()
+        )
+        if p_ar and (p_ar.content or "").strip():
+            body = (p_ar.content or "").strip()
+            t_ar = str(p_ar.title or p_ar.url or "")[:200]
+            appreq_block = (
+                f"[{p_ar.title} — international undergraduate application requirements; "
+                f"answer using every required diploma/exam and score in the text below]\n{body[:14000]}"
+            )
+            appreq_sources = [
+                {
+                    "url": str(p_ar.url),
+                    "title": t_ar,
+                    "cosine_distance": 0.0,
+                }
+            ]
+            appreq_skip.add(str(p_ar.url))
+
     if intl_apply_intent:
         intl_q = (
-            Q(url__icontains="international-student")
+            Q(url__icontains="application-requirements")
+            | Q(url__icontains="international-student")
             | Q(url__icontains="international-students")
             | Q(url__icontains="international/admission")
             | (Q(url__icontains="international") & Q(url__icontains="admission"))
@@ -1078,32 +1120,48 @@ def search_document_chunks(
             .exclude(url__icontains="/events/")
             .only("url", "title", "content")[:40]
         )
+        if intl_ug_only:
+            intl_pages_all = [
+                p
+                for p in intl_pages_all
+                if not _GRADUATE_INTL_SOURCE_HINT.search(
+                    f"{p.url} {p.title or ''}"
+                )
+            ]
 
         def _intl_priority(p: Page) -> tuple[int, int]:
             u = str(p.url or "").lower()
             t = str(p.title or "").lower()
             pri = 90
-            if "international" in u and "admission" in u:
+            if "application-requirements" in u:
                 pri = 0
-            elif "international-student" in u or "international-students" in u:
+            elif "international" in u and "admission" in u:
                 pri = 1
+            elif "international-student" in u or "international-students" in u:
+                pri = 2
             elif "international" in u and (
                 "apply" in u or "basvuru" in u or "kayit" in u
             ):
-                pri = 2
-            elif "admission" in t and "international" in t:
                 pri = 3
+            elif "admission" in t and "international" in t:
+                pri = 4
             elif "international" in t and (
                 "student" in t or "admission" in t
             ):
-                pri = 4
+                pri = 5
             elif "ucret" in u or "fee" in u or "tuition" in u or "fiyat" in u:
                 pri = 12
             elif "visa" in u or "residence" in u or "ikamet" in u:
                 pri = 15
             return (pri, len(u))
 
-        intl_pages = sorted(intl_pages_all, key=_intl_priority)[:2]
+        intl_pages: list[Page] = []
+        for p in sorted(intl_pages_all, key=_intl_priority):
+            if str(p.url) in appreq_skip:
+                continue
+            intl_pages.append(p)
+            if len(intl_pages) >= 2:
+                break
         intl_parts: list[str] = []
         for p in intl_pages:
             body = (p.content or "").strip()
@@ -1172,6 +1230,8 @@ def search_document_chunks(
     max_context_chars = (
         max(RAG_MAX_CHARS, 9000) if inject_block else RAG_MAX_CHARS
     )
+    if appreq_block:
+        max_context_chars = max(max_context_chars, 12000)
 
     context_parts: list[str] = []
     sources: list[dict] = []
@@ -1192,6 +1252,12 @@ def search_document_chunks(
         if is_rag_source_url_blocked(u):
             return
         if inject_skip_url and u == inject_skip_url:
+            return
+        if u in appreq_skip:
+            return
+        if intl_ug_only and _GRADUATE_INTL_SOURCE_HINT.search(
+            f"{u} {ch.page_title or ''}"
+        ):
             return
         max_chunks_per_url = RAG_MAX_CHUNKS_PER_URL + (1 if scholarship_intent else 0)
         if url_counts.get(u, 0) >= max_chunks_per_url:
@@ -1274,10 +1340,16 @@ def search_document_chunks(
     out = "\n\n".join(context_parts)
     if intl_block:
         out = f"{intl_block}\n\n{out}" if out else intl_block
-        existing_urls_intl = {str(s.get("url") or "") for s in sources}
-        prepend_intl = [s for s in intl_sources if str(s.get("url") or "") not in existing_urls_intl]
-        if prepend_intl:
-            sources = prepend_intl + sources
+    if appreq_block:
+        out = f"{appreq_block}\n\n{out}" if out else appreq_block
+    if appreq_block or intl_block:
+        aurls = {str(s.get("url") or "") for s in appreq_sources} if appreq_block else set()
+        iurls = {str(s.get("url") or "") for s in intl_sources} if intl_block else set()
+        head_u = (aurls | iurls) - {""}
+        tail = [s for s in sources if str(s.get("url") or "") not in head_u]
+        sources = (list(appreq_sources) if appreq_block else []) + (
+            list(intl_sources) if intl_block else []
+        ) + tail
     if loc_block:
         out = f"{loc_block}\n\n{out}" if out else loc_block
         existing_urls = {str(s.get("url") or "") for s in sources}
