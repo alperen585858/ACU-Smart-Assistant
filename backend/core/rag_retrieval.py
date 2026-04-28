@@ -774,6 +774,8 @@ def search_document_chunks(
             Q(source_url__icontains="tuition")
             | Q(source_url__icontains="ucret")
             | Q(source_url__icontains="ücret")
+            | Q(source_url__icontains="scholarship")
+            | Q(source_url__icontains="/burs/")
             | Q(source_url__icontains="/fees")
             | Q(source_url__icontains="ogrenim-ucret")
             | Q(source_url__icontains="kayit-ucret")
@@ -1021,6 +1023,9 @@ def search_document_chunks(
     appreq_block = ""
     appreq_sources: list[dict] = []
     appreq_skip: set[str] = set()
+    scholarship_block = ""
+    scholarship_sources: list[dict] = []
+    scholarship_skip: set[str] = set()
     if location_intent and not fee_intent:
         loc_q = (
             Q(url__icontains="communication-and-transportation")
@@ -1099,6 +1104,32 @@ def search_document_chunks(
                 }
             ]
             appreq_skip.add(str(p_ar.url))
+
+    if scholarship_intent:
+        p_sc = (
+            Page.objects.filter(
+                Q(url__icontains="scholarship-opportunities")
+                | Q(url__icontains="/burs/")
+                | Q(url__icontains="scholarship")
+            )
+            .exclude(url__icontains="obs.")
+            .only("url", "title", "content")
+            .first()
+        )
+        if p_sc and (p_sc.content or "").strip():
+            body = (p_sc.content or "").strip()
+            t_sc = str(p_sc.title or p_sc.url or "")[:200]
+            scholarship_block = (
+                f"[{p_sc.title} — scholarship opportunities source; answer from this page first]\n{body[:14000]}"
+            )
+            scholarship_sources = [
+                {
+                    "url": str(p_sc.url),
+                    "title": t_sc,
+                    "cosine_distance": 0.0,
+                }
+            ]
+            scholarship_skip.add(str(p_sc.url))
 
     if intl_apply_intent:
         intl_q = (
@@ -1255,6 +1286,8 @@ def search_document_chunks(
             return
         if u in appreq_skip:
             return
+        if u in scholarship_skip:
+            return
         if intl_ug_only and _GRADUATE_INTL_SOURCE_HINT.search(
             f"{u} {ch.page_title or ''}"
         ):
@@ -1338,24 +1371,30 @@ def search_document_chunks(
                 break
 
     out = "\n\n".join(context_parts)
+    if scholarship_block:
+        out = f"{scholarship_block}\n\n{out}" if out else scholarship_block
     if intl_block:
         out = f"{intl_block}\n\n{out}" if out else intl_block
     if appreq_block:
         out = f"{appreq_block}\n\n{out}" if out else appreq_block
-    if appreq_block or intl_block:
+    if appreq_block or intl_block or scholarship_block:
+        surls = {str(s.get("url") or "") for s in scholarship_sources} if scholarship_block else set()
         aurls = {str(s.get("url") or "") for s in appreq_sources} if appreq_block else set()
         iurls = {str(s.get("url") or "") for s in intl_sources} if intl_block else set()
-        head_u = (aurls | iurls) - {""}
+        head_u = (surls | aurls | iurls) - {""}
         tail = [s for s in sources if str(s.get("url") or "") not in head_u]
-        sources = (list(appreq_sources) if appreq_block else []) + (
-            list(intl_sources) if intl_block else []
-        ) + tail
+        sources = (
+            (list(scholarship_sources) if scholarship_block else [])
+            + (list(appreq_sources) if appreq_block else [])
+            + (list(intl_sources) if intl_block else [])
+            + tail
+        )
     if loc_block:
         out = f"{loc_block}\n\n{out}" if out else loc_block
         existing_urls = {str(s.get("url") or "") for s in sources}
-        prepend = [s for s in loc_sources if str(s.get("url") or "") not in existing_urls]
-        if prepend:
-            sources = prepend + sources
+        loc_prepend = [s for s in loc_sources if str(s.get("url") or "") not in existing_urls]
+        if loc_prepend:
+            sources = loc_prepend + sources
     if inject_block:
         out = f"{inject_block}\n\n{out}" if out else inject_block
         if inject_skip_url and not any(
