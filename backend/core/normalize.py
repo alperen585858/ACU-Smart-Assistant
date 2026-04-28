@@ -9,40 +9,70 @@ from collections import OrderedDict
 
 
 _TR_CHARS_RE = re.compile(r"[çğıöşüÇĞİÖŞÜ]")
-_ASCII_LETTER_RE = re.compile(r"[A-Za-z]")
-_WORD_RE = re.compile(r"[A-Za-zçğıöşüÇĞİÖŞÜ]{2,}")
+_LETTER_RE = re.compile(r"[A-Za-zçğıöşüÇĞİÖŞÜ]")
+_TR_STOPWORDS = (
+    " ve ",
+    " için ",
+    " ile ",
+    " olarak ",
+    " veya ",
+    " değil ",
+    " bu ",
+    " şu ",
+    " bir ",
+)
+_TR_MIN_CHARS = int(os.environ.get("RAG_TR_DETECT_MIN_CHARS", "80"))
+_TR_STOPWORD_HITS = int(os.environ.get("RAG_TR_DETECT_STOPWORD_HITS", "2"))
+_TR_CHAR_RATIO = float(os.environ.get("RAG_TR_DETECT_CHAR_RATIO", "0.02"))
+_TR_STRONG_MIN_WORDS = int(os.environ.get("RAG_TR_STRONG_MIN_WORDS", "30"))
+_TR_STRONG_STOPWORD_HITS = int(os.environ.get("RAG_TR_STRONG_STOPWORD_HITS", "4"))
+_TR_STRONG_CHAR_RATIO = float(os.environ.get("RAG_TR_STRONG_CHAR_RATIO", "0.035"))
+_TR_STRONG_MODE = os.environ.get("RAG_TR_STRONG_MODE", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+)
 
 
 def is_probably_turkish(text: str) -> bool:
     """
-    Heuristic Turkish detection intended for short web chunks.
-    Avoids adding external deps (langdetect) and is robust to mixed pages.
+    Heuristic Turkish detection for mixed-language web chunks.
+    Designed to avoid false positives from isolated words like "Acıbadem".
     """
     t = (text or "").strip()
     if not t:
         return False
 
-    # Strong signal: Turkish-specific characters.
-    if _TR_CHARS_RE.search(t):
-        return True
-
-    # Weak signal: common TR function words.
-    # (Helps with Turkish content that happens to be ASCII-only.)
-    low = t.casefold()
-    tr_hits = 0
-    for w in (" ve ", " için", " ile ", " olarak", " veya ", " değil", " bu ", " şu ", " bir "):
-        if w in low:
-            tr_hits += 1
-            if tr_hits >= 2:
-                return True
-
-    # If it looks purely ASCII English-ish, treat as non-TR.
-    if _ASCII_LETTER_RE.search(t) and not _TR_CHARS_RE.search(t):
+    # Very short snippets are noisy for language detection; skip translation by default.
+    if len(t) < _TR_MIN_CHARS:
         return False
 
-    # Fallback: if there are no clear letters, don't translate.
-    words = _WORD_RE.findall(t)
-    return bool(words) and tr_hits >= 1
+    # Turkish stopword signal (ASCII-safe + Turkish-specific forms).
+    low = f" {t.casefold()} "
+    stop_hits = sum(1 for w in _TR_STOPWORDS if w in low)
+    if stop_hits >= _TR_STOPWORD_HITS:
+        return True
+
+    # Ratio signal: require enough Turkish-specific chars among letters.
+    letters = len(_LETTER_RE.findall(t))
+    if letters == 0:
+        return False
+
+    tr_chars = len(_TR_CHARS_RE.findall(t))
+    tr_ratio = tr_chars / letters
+    words = len(re.findall(r"\w+", t))
+
+    # Strong mode: translate only clearly Turkish chunks/pages.
+    # This avoids sending mixed English chunks (e.g. just "Acıbadem" mentions) to translation.
+    if _TR_STRONG_MODE:
+        if words < _TR_STRONG_MIN_WORDS:
+            return False
+        return (
+            stop_hits >= _TR_STRONG_STOPWORD_HITS
+            and tr_ratio >= _TR_STRONG_CHAR_RATIO
+        )
+
+    return tr_ratio >= _TR_CHAR_RATIO
 
 
 # ── Translation (best-effort, optional) ──────────────────────────────────

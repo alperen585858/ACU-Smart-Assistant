@@ -3,6 +3,7 @@ import logging
 import os
 import threading
 from collections import OrderedDict
+from typing import Any
 
 from sentence_transformers import SentenceTransformer
 
@@ -119,10 +120,10 @@ def get_reranker():
             return _reranker_instance
         try:
             from sentence_transformers import CrossEncoder
-            _reranker_instance = CrossEncoder(
-                _RERANKER_MODEL_NAME,
-                model_kwargs={"low_cpu_mem_usage": False},
-            )
+            reranker_kwargs: dict[str, Any] = {
+                "model_kwargs": {"low_cpu_mem_usage": False},
+            }
+            _reranker_instance = CrossEncoder(_RERANKER_MODEL_NAME, **reranker_kwargs)
             logger.info("Reranker model loaded: %s", _RERANKER_MODEL_NAME)
             return _reranker_instance
         except Exception:
