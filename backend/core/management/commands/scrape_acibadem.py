@@ -27,6 +27,8 @@ DEFAULT_SEEDS = (
     "https://www.acibadem.edu.tr/en/academic/undergraduate-programs/faculty-of-engineering-and-natural-sciences/departments/computer-engineering/commissions",
     # Rector, vice-rectors, deans, senate (tables; English /en path).
     "https://www.acibadem.edu.tr/en/university/instructors-handbook/university-structure-and-management/university-management",
+    # International undergraduate — diploma/exam score table (RAG).
+    "https://www.acibadem.edu.tr/en/international-office/international-students/admissions/undergraduate/application-requirements",
 )
 ALLOWED_NETLOCS = frozenset(
     {
