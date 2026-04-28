@@ -19,6 +19,8 @@ DEFAULT_SEEDS = (
     "https://www.acibadem.edu.tr/en/node",
     "https://www.acibadem.edu.tr/en/news",
     "https://www.acibadem.edu.tr/en/announcements",
+    # Scholarships/discounts — frequently asked, and the /en page can contain Turkish content.
+    "https://www.acibadem.edu.tr/en/aday/ogrenci/egitim/burs/scholarship-opportunities",
     # Registration contact/transport — often not reached within default depth/page limits from home alone.
     "https://www.acibadem.edu.tr/en/kayit/iletisim/ulasim",
     "https://www.acibadem.edu.tr/en/academic/undergraduate-programs/faculty-of-engineering-and-natural-sciences/departments/computer-engineering/message-from-head-of-department",
