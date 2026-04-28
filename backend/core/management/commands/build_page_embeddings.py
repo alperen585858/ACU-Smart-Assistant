@@ -3,6 +3,7 @@ from django.db import transaction
 
 from core.chunking import chunks_for_embedding
 from core.embeddings import embed_texts
+from core.normalize import normalize_for_embedding
 from core.models import DocumentChunk, Page
 
 
@@ -48,7 +49,8 @@ class Command(BaseCommand):
             chunk_index = 0
             for i in range(0, len(chunks), batch_size):
                 batch_chunks = chunks[i : i + batch_size]
-                vectors = embed_texts(batch_chunks)
+                embed_inputs = [normalize_for_embedding(c) for c in batch_chunks]
+                vectors = embed_texts(embed_inputs)
                 for text, vector in zip(batch_chunks, vectors):
                     if vector is None:
                         self.stderr.write(
