@@ -7,18 +7,15 @@ def _env_bool(key: str, default: str = "true") -> bool:
     return os.environ.get(key, default).lower() in ("1", "true", "yes")
 
 
-RAG_MAX_CHARS = max(800, int(os.environ.get("RAG_MAX_CHARS", "1000")))
-RAG_TOP_K = int(os.environ.get("RAG_TOP_K", "3"))
-RAG_VECTOR_FILL_EXTRA = max(0, int(os.environ.get("RAG_VECTOR_FILL_EXTRA", "0")))
-# Cap chunks per URL in one prompt (lower = less duplicate pages eating the char budget).
-#Nehir: Bu değer arttıkça recall artar, precision düşer. Model saçmalarsa değeri düşürebilirsiniz.
-RAG_MAX_CHUNKS_PER_URL = max(1, int(os.environ.get("RAG_MAX_CHUNKS_PER_URL", "1")))
-#Nehir: Model saçmalarsa bu değeri de düşürebilirsiniz.
-RAG_MAX_DISTANCE = float(os.environ.get("RAG_MAX_DISTANCE", "0.64"))
+RAG_MAX_CHARS = max(800, int(os.environ.get("RAG_MAX_CHARS", "3000")))
+RAG_TOP_K = int(os.environ.get("RAG_TOP_K", "8"))
+RAG_VECTOR_FILL_EXTRA = max(0, int(os.environ.get("RAG_VECTOR_FILL_EXTRA", "4")))
+RAG_MAX_CHUNKS_PER_URL = max(1, int(os.environ.get("RAG_MAX_CHUNKS_PER_URL", "2")))
+RAG_MAX_DISTANCE = float(os.environ.get("RAG_MAX_DISTANCE", "0.68"))
 RAG_RELAX_ON_EMPTY = _env_bool("RAG_RELAX_ON_EMPTY", "true")
 RAG_KEYWORD_BOOST = _env_bool("RAG_KEYWORD_BOOST", "true")
 RAG_SNIPPET_CHARS = min(
-    max(250, int(os.environ.get("RAG_SNIPPET_CHARS", "350"))),
+    max(400, int(os.environ.get("RAG_SNIPPET_CHARS", "700"))),
     RAG_MAX_CHARS,
 )
 
