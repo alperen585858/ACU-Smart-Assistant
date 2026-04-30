@@ -2,6 +2,7 @@ import hashlib
 import logging
 import os
 import threading
+import time as _time
 from collections import OrderedDict
 from typing import Any
 
@@ -10,9 +11,15 @@ from sentence_transformers import SentenceTransformer
 logger = logging.getLogger("core.embeddings")
 
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
-_EMBEDDING_LOAD_FAILED = False
 _embedding_model: SentenceTransformer | None = None
 _embedding_model_lock = threading.Lock()
+
+# Retry policy: after a load failure, wait _RETRY_COOLDOWN seconds before
+# trying again.  After _MAX_RETRIES consecutive failures, give up permanently.
+_EMBEDDING_RETRY_COOLDOWN = int(os.environ.get("EMBEDDING_RETRY_COOLDOWN_SECS", "300"))
+_EMBEDDING_MAX_RETRIES = int(os.environ.get("EMBEDDING_MAX_RETRIES", "3"))
+_embedding_fail_count: int = 0
+_embedding_fail_time: float = 0.0
 
 # ── Embedding cache ──────────────────────────────────────────────────────
 _EMBED_CACHE_MAX = int(os.environ.get("EMBED_CACHE_MAX", "512"))
@@ -26,30 +33,70 @@ def _cache_key(text: str) -> str:
 
 def get_embedding_model() -> SentenceTransformer:
     """
-    Load once, thread-safe. Prevents concurrent SentenceTransformer() races (meta tensor
-    / NotImplementedError on PyTorch 2.2+). Disables low_cpu_mem default meta init path.
+    Load once, thread-safe.  On failure, retries after a cooldown period
+    (default 300 s, env ``EMBEDDING_RETRY_COOLDOWN_SECS``) up to a maximum
+    number of consecutive failures (default 3, env ``EMBEDDING_MAX_RETRIES``).
+    After the limit is reached the error becomes permanent for this process.
     """
-    global _embedding_model, _EMBEDDING_LOAD_FAILED
-    if _EMBEDDING_LOAD_FAILED:
-        raise RuntimeError("Embedding model is unavailable in this environment.")
+    global _embedding_model, _embedding_fail_count, _embedding_fail_time
+
+    # Fast path — already loaded
     if _embedding_model is not None:
         return _embedding_model
+
+    # Fast path — permanently failed (max retries exhausted)
+    if _embedding_fail_count >= _EMBEDDING_MAX_RETRIES:
+        raise RuntimeError(
+            f"Embedding model permanently unavailable after "
+            f"{_embedding_fail_count} failed attempts."
+        )
+
+    # In cooldown after a recent failure — skip without acquiring the lock
+    if _embedding_fail_count > 0:
+        elapsed = _time.monotonic() - _embedding_fail_time
+        if elapsed < _EMBEDDING_RETRY_COOLDOWN:
+            remaining = int(_EMBEDDING_RETRY_COOLDOWN - elapsed)
+            raise RuntimeError(
+                f"Embedding model unavailable (retry in {remaining}s, "
+                f"attempt {_embedding_fail_count}/{_EMBEDDING_MAX_RETRIES})."
+            )
+        logger.info(
+            "Embedding retry cooldown expired, attempting reload "
+            "(attempt %d/%d)...",
+            _embedding_fail_count + 1,
+            _EMBEDDING_MAX_RETRIES,
+        )
+
     with _embedding_model_lock:
+        # Re-check inside lock (another thread may have loaded it)
         if _embedding_model is not None:
             return _embedding_model
+        if _embedding_fail_count >= _EMBEDDING_MAX_RETRIES:
+            raise RuntimeError(
+                f"Embedding model permanently unavailable after "
+                f"{_embedding_fail_count} failed attempts."
+            )
         model_name = os.environ.get("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
         try:
-            # See huggingface/sentence-transformers#3396 — avoid default meta-device load + .to(cpu) failure
             model = SentenceTransformer(
                 model_name,
                 device="cpu",
                 model_kwargs={"low_cpu_mem_usage": False},
             )
             _embedding_model = model
+            _embedding_fail_count = 0  # reset on success
             logger.info("Embedding model loaded: %s", model_name)
             return _embedding_model
         except Exception:
-            _EMBEDDING_LOAD_FAILED = True
+            _embedding_fail_count += 1
+            _embedding_fail_time = _time.monotonic()
+            logger.error(
+                "Embedding model load failed (attempt %d/%d), "
+                "next retry in %ds",
+                _embedding_fail_count,
+                _EMBEDDING_MAX_RETRIES,
+                _EMBEDDING_RETRY_COOLDOWN,
+            )
             raise
 
 
@@ -105,30 +152,58 @@ _RERANKER_MODEL_NAME = os.environ.get(
 )
 _reranker_lock = threading.Lock()
 _reranker_instance = None
-_RERANKER_LOAD_FAILED = False
+_RERANKER_RETRY_COOLDOWN = int(os.environ.get("RERANKER_RETRY_COOLDOWN_SECS", "300"))
+_RERANKER_MAX_RETRIES = int(os.environ.get("RERANKER_MAX_RETRIES", "3"))
+_reranker_fail_count: int = 0
+_reranker_fail_time: float = 0.0
 
 
 def get_reranker():
-    """Lazy-load cross-encoder reranker (tiny model, ~20MB)."""
-    global _reranker_instance, _RERANKER_LOAD_FAILED
-    if _RERANKER_LOAD_FAILED:
-        return None
+    """
+    Lazy-load cross-encoder reranker with retry.  Returns ``None`` when
+    the model is unavailable (cooldown or permanent failure).
+    """
+    global _reranker_instance, _reranker_fail_count, _reranker_fail_time
+
     if _reranker_instance is not None:
         return _reranker_instance
+    if _reranker_fail_count >= _RERANKER_MAX_RETRIES:
+        return None
+    if _reranker_fail_count > 0:
+        elapsed = _time.monotonic() - _reranker_fail_time
+        if elapsed < _RERANKER_RETRY_COOLDOWN:
+            return None
+        logger.info(
+            "Reranker retry cooldown expired, attempting reload "
+            "(attempt %d/%d)...",
+            _reranker_fail_count + 1,
+            _RERANKER_MAX_RETRIES,
+        )
+
     with _reranker_lock:
         if _reranker_instance is not None:
             return _reranker_instance
+        if _reranker_fail_count >= _RERANKER_MAX_RETRIES:
+            return None
         try:
             from sentence_transformers import CrossEncoder
             reranker_kwargs: dict[str, Any] = {
                 "model_kwargs": {"low_cpu_mem_usage": False},
             }
             _reranker_instance = CrossEncoder(_RERANKER_MODEL_NAME, **reranker_kwargs)
+            _reranker_fail_count = 0
             logger.info("Reranker model loaded: %s", _RERANKER_MODEL_NAME)
             return _reranker_instance
         except Exception:
-            logger.warning("Reranker model failed to load, falling back to lexical rerank")
-            _RERANKER_LOAD_FAILED = True
+            _reranker_fail_count += 1
+            _reranker_fail_time = _time.monotonic()
+            logger.warning(
+                "Reranker load failed (attempt %d/%d), "
+                "next retry in %ds — falling back to lexical rerank",
+                _reranker_fail_count,
+                _RERANKER_MAX_RETRIES,
+                _RERANKER_RETRY_COOLDOWN,
+            )
             return None
 
 
