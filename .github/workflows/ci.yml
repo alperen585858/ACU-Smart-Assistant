@@ -31,7 +31,10 @@ jobs:
         run: ruff check .
 
       - name: Run unit tests
-        run: python -m unittest core.tests -v
+        run: |
+          python -m unittest core.tests -v
+          python -m unittest core.tests_rag_keywords -v
+          python -m unittest chat.tests_utils -v
 
   frontend-lint:
     runs-on: ubuntu-latest
