@@ -130,13 +130,8 @@ def _chat_with_db(body: dict, client_uuid: uuid.UUID) -> JsonResponse:
     rag_q = compose_rag_search_query(message, prior_user_texts)
     system_text, user_llm, rag_meta = prepare_chat_prompts(rag_q, message)
     ollama_messages: list = [{"role": "system", "content": system_text}]
-    if rag_meta.get("reason") != RAG_META_REASON_SKIPPED_SMALLTALK:
-        prior_window = prior[-CHAT_HISTORY_MAX_MESSAGES:]
-        for m in prior_window:
-            if m.role in ("user", "assistant") and m.content.strip():
-                # Aggressively trim assistant history to prevent model reusing old context
-                max_chars = 200 if m.role == "assistant" else CHAT_MESSAGE_MAX_CHARS
-                ollama_messages.append({"role": m.role, "content": trim_message_for_llm(m.content, max_chars)})
+    # No chat history sent to LLM — each question gets independent RAG context
+    # This prevents prior answers from contaminating new responses
     ollama_messages.append({"role": "user", "content": trim_last_user_for_llm(user_llm, RAG_USER_BUBBLE_MAX_CHARS)})
 
     user_row = ChatMessage.objects.create(session=session, role="user", content=message)
