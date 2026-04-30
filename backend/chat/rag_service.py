@@ -212,7 +212,7 @@ def _looks_english_only(text: str) -> bool:
 
 
 def compose_rag_search_query(current_message: str, prior_user_messages: list[str]) -> str:
-    prior = [t.strip() for t in prior_user_messages if t.strip()][-2:]
+    prior = []  # Each question gets independent RAG search — no prior context bleeding
     cur = (current_message or "").strip()
     merged = "\n".join(prior + [cur]) if (prior or cur) else ""
     if not merged:
@@ -320,10 +320,66 @@ def compose_rag_search_query(current_message: str, prior_user_messages: list[str
             f"{merged}\nComputer Engineering undergraduate "
             "faculty engineering program degree"
         )
+    elif re.search(r"study\s+abroad|exchange|erasmus|mobility|yurt\s*dışı", cur, re.IGNORECASE):
+        merged = (
+            f"{merged}\n"
+            "Erasmus+ exchange programs student mobility global exchange international office "
+            "study abroad partner universities agreements bilateral Erasmus charter"
+        )
+    elif re.search(r"english.*(course|program|lecture|taught)|courses?\s+in\s+english|language\s+of\s+instruction|taught\s+in\s+english", cur, re.IGNORECASE):
+        merged = (
+            f"{merged}\n"
+            "English programs tuition fees international students undergraduate degree "
+            "SCHOOL OF MEDICINE Medicine English 30000 USD "
+            "Computer Engineering English 12500 USD "
+            "Nursing English 8000 USD "
+            "Nutrition and Dietetics English 8000 USD "
+            "Physiotherapy English Psychology English Molecular Biology English "
+            "language of instruction program language fee"
+        )
+    elif re.search(r"support\s+service|student\s+service|student\s+support|counseling|guidance", cur, re.IGNORECASE):
+        merged = (
+            f"{merged}\n"
+            "student support services career center counseling guidance orientation "
+            "sports center health center clubs student life campus"
+        )
+    elif re.search(r"campus\s+life|student\s+life|activit|club|social", cur, re.IGNORECASE):
+        merged = (
+            f"{merged}\n"
+            "student clubs campus life activities sports center events "
+            "orientation student organizations social cultural"
+        )
+    elif re.search(r"graduat.*work|graduat.*industr|graduat.*career|alumni|where.*work|employment", cur, re.IGNORECASE):
+        merged = (
+            f"{merged}\n"
+            "career center graduates employment alumni industry placement "
+            "job opportunities career support internship"
+        )
+    elif re.search(r"partner|collaborat|agreement|cooperation", cur, re.IGNORECASE):
+        merged = (
+            f"{merged}\n"
+            "institutional agreements research collaborations international partnerships "
+            "partner universities bilateral exchange cooperation"
+        )
+    elif re.search(r"found|establish|when.*start|history|about\s+the\s+university", cur, re.IGNORECASE):
+        merged = (
+            f"{merged}\n"
+            "Acıbadem University founded 2007 established history about university "
+            "Kerem Aydınlar Istanbul private Acıbadem Healthcare Group"
+        )
+    elif re.search(r"public|private|state|vakıf|devlet", cur, re.IGNORECASE):
+        merged = (
+            f"{merged}\n"
+            "Acıbadem private foundation university vakıf üniversitesi "
+            "Acıbadem Healthcare Group founded 2007"
+        )
     elif RAG_DEPT_OR_FACULTY_INTENT_RE.search(cur):
         merged = (
-            f"{merged}\nfaculty school department Fakülte "
-            "programs schools list"
+            f"{merged}\n"
+            "Undergraduate Programs School of Medicine Faculty of Pharmacy "
+            "Faculty of Health Sciences Faculty of Engineering and Natural Sciences "
+            "Faculty of Humanities and Social Sciences Graduate School "
+            "Vocational School departments faculties all academic units list"
         )
     return merged
 
