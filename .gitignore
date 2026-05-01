@@ -218,3 +218,6 @@ frontend/node_modules/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Local DB dumps (share/export artifacts, do not commit)
+db_dump_*.sql
