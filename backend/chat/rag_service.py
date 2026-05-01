@@ -405,12 +405,37 @@ def _search_pages_with_meta(composed_query: str, raw_user_query: str = "") -> tu
     return search_document_chunks(composed_query, raw_user_query or None)
 
 
+def _filter_turkish_lines(context: str) -> str:
+    """Remove lines that are predominantly Turkish to prevent language mixing in responses."""
+    turkish_chars = re.compile(r"[çğıöşüÇĞİÖŞÜ]")
+    turkish_words = re.compile(
+        r"\b(ve|ile|bir|olan|için|veya|yer|olan|gibi|olarak|"
+        r"görev|akademik|üniversite|fakülte|bölüm|komisyon|başkan|"
+        r"almaktadır|bulunmaktadır|yapılmaktadır|oluşmaktadır)\b",
+        re.IGNORECASE,
+    )
+    lines = context.split("\n")
+    filtered = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            filtered.append(line)
+            continue
+        turkish_char_count = len(turkish_chars.findall(stripped))
+        turkish_word_count = len(turkish_words.findall(stripped))
+        # Skip lines with heavy Turkish content
+        if turkish_char_count > 3 and turkish_word_count > 2:
+            continue
+        filtered.append(line)
+    return "\n".join(filtered)
+
+
 def _wrap_user_with_rag_context(context: str, user_plain: str) -> str:
+    context = _filter_turkish_lines(context)
     footer = (
         "\n===END_QUESTION===\n"
-        "Now write your reply to the user. Use only facts from the excerpts above. "
-        "If the question is in English, write in warm, natural English (not terse): optional one-line opener, "
-        "then facts, then one short English offer to help further. Same idea in Turkish for Turkish questions. "
+        "Now write your reply to the user in ENGLISH ONLY. Use only facts from the excerpts above. "
+        "Translate any Turkish content to English. Never include Turkish words in your response. "
         "Do not repeat the words ===CONTEXT=== or ===QUESTION=== in your reply. "
         "If the question is broad, summarize what the excerpts actually state. "
         "Follow the system message for opening and closing (except when using the exact refusal). "
