@@ -9,6 +9,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
+from urllib.parse import parse_qs, urlparse
 
 from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector
 from django.db import connection
@@ -407,6 +408,18 @@ def _embedding_variants(composed: str, raw_user: str | None) -> list[str]:
         )
         if fee_all.casefold() not in {v.casefold() for v in variants}:
             variants.append(fee_all)
+    # OBS Computer Engineering: steer vector search toward Bologna course/module vocabulary.
+    if (
+        RAG_ACADEMIC_OBS_INTENT_RE.search(fl_blob)
+        and extract_target_entity_key(fl_blob) == "computer-engineering"
+    ):
+        obs_ce = (
+            "Acıbadem University Computer Engineering undergraduate Bologna programme "
+            "course structure curriculum semester modules ECTS course codes syllabus "
+            "programme learning outcomes degree requirements"
+        )
+        if obs_ce.casefold() not in {v.casefold() for v in variants}:
+            variants.append(obs_ce)
     # Dedupe preserving order
     seen: set[str] = set()
     out: list[str] = []
@@ -505,6 +518,26 @@ _OBS_URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+_OBS_PROGRAM_DETAIL_RE = re.compile(
+    r"showpac|curop=showpac|cursunit=\d+|curunit=\d+",
+    re.IGNORECASE,
+)
+
+_CE_CURRICULUM_QUERY_RE = re.compile(
+    r"\blessons?\b|\bcourses?\b|curriculum|modules?|\bects\b|syllabus|müfredat|ders",
+    re.IGNORECASE,
+)
+
+# Entity-specific OBS program code hints.
+# These codes are stable enough to de-prioritize clearly wrong program links.
+# curUnit=14 Computer Engineering uses several curSunit shells (overview vs sections).
+_OBS_ENTITY_CODE_HINTS: dict[str, dict[str, set[str]]] = {
+    "computer-engineering": {
+        "curunit": {"14"},
+        "cursunit": {"6246", "6247", "6248"},
+    },
+}
+
 _LOCATION_AUTH_HINT_RE = re.compile(
     r"contact|iletisim|iletişim|address|adres|transport|ula[şs][ıi]m|campus|konum|location",
     re.IGNORECASE,
@@ -553,8 +586,113 @@ def _obs_priority_adjustment(url: str, title: str, *, location_intent: bool, aca
     if location_intent:
         return 0.22
     if academic_obs_intent:
+        # For curriculum questions, reward program-detail OBS pages more than
+        # generic index/info pages.
+        if _OBS_PROGRAM_DETAIL_RE.search(blob):
+            return -0.16
         return -0.10
     return 0.03
+
+
+def _obs_entity_code_adjustment(url: str, intents: QueryIntents) -> float:
+    """
+    OBS program-detail URL tuning by target entity code hints.
+    Negative => promote, positive => demote.
+    """
+    if not intents.academic_obs or not intents.target_entity:
+        return 0.0
+    if not _OBS_PROGRAM_DETAIL_RE.search(url or ""):
+        return 0.0
+    hints = _OBS_ENTITY_CODE_HINTS.get(intents.target_entity)
+    if not hints:
+        return 0.0
+    parsed = urlparse(str(url or ""))
+    q = parse_qs(parsed.query or "")
+    curunit = (q.get("curUnit") or q.get("curunit") or [""])[0].strip()
+    cursunit = (q.get("curSunit") or q.get("cursunit") or [""])[0].strip()
+
+    score = 0.0
+    unit_hints = hints.get("curunit") or set()
+    sunit_hints = hints.get("cursunit") or set()
+
+    if curunit:
+        score += -0.20 if curunit in unit_hints else 0.50
+    if cursunit:
+        score += -0.14 if cursunit in sunit_hints else 0.34
+    return score
+
+
+def _obs_url_matches_target_entity(url: str, intents: QueryIntents) -> bool:
+    """
+    True when OBS URL query params match known target entity codes.
+    If no hints exist for that entity, return False.
+    """
+    if not intents.target_entity:
+        return False
+    hints = _OBS_ENTITY_CODE_HINTS.get(intents.target_entity)
+    if not hints:
+        return False
+    parsed = urlparse(str(url or ""))
+    q = parse_qs(parsed.query or "")
+    curunit = (q.get("curUnit") or q.get("curunit") or [""])[0].strip()
+    cursunit = (q.get("curSunit") or q.get("cursunit") or [""])[0].strip()
+    unit_hints = hints.get("curunit") or set()
+    sunit_hints = hints.get("cursunit") or set()
+    return bool(
+        (curunit and curunit in unit_hints)
+        or (cursunit and cursunit in sunit_hints)
+    )
+
+
+def _obs_url_entity_match_state(url: str, intents: QueryIntents) -> bool | None:
+    """
+    Tri-state entity match for OBS URLs:
+    - True  : URL matches known entity code hints
+    - False : URL has comparable codes but mismatches hints
+    - None  : no reliable hint or no comparable URL params
+    """
+    if not intents.target_entity:
+        return None
+    hints = _OBS_ENTITY_CODE_HINTS.get(intents.target_entity)
+    if not hints:
+        return None
+    parsed = urlparse(str(url or ""))
+    q = parse_qs(parsed.query or "")
+    curunit = (q.get("curUnit") or q.get("curunit") or [""])[0].strip()
+    cursunit = (q.get("curSunit") or q.get("cursunit") or [""])[0].strip()
+    if not curunit and not cursunit:
+        return None
+    return _obs_url_matches_target_entity(url, intents)
+
+
+def _academic_obs_fallback_chunks(intents: QueryIntents, limit: int = 3) -> list[DocumentChunk]:
+    """
+    Last-resort OBS fallback for curriculum queries when ranking yields no usable context.
+    Prefers program-detail OBS URLs and entity-matching code hints.
+    """
+    if not intents.academic_obs:
+        return []
+
+    qs = (
+        DocumentChunk.objects.filter(source_url__icontains="obs.acibadem.edu.tr")
+        .filter(source_url__icontains="showPac")
+        .only("pk", "content", "page_title", "source_url")
+    )
+    out: list[DocumentChunk] = []
+    for ch in qs.iterator(chunk_size=200):
+        u = str(ch.source_url or "")
+        if is_rag_source_url_blocked(u):
+            continue
+        if intents.target_alias:
+            blob = f"{ch.page_title or ''}\n{ch.content or ''}\n{u}".lower()
+            has_alias = any(a and a.lower() in blob for a in intents.target_alias)
+            match_state = _obs_url_entity_match_state(u, intents)
+            if match_state is False and not has_alias:
+                continue
+        out.append(ch)
+        if len(out) >= max(1, limit):
+            break
+    return out
 
 
 def _rerank_items(
@@ -935,17 +1073,82 @@ def _effective_sort_distance(
         d = d - min(0.06, 0.02 * pos) + min(0.04, 0.01 * neg)
         if _ENTITY_NOISE_SOURCE_RE.search(str(ch.source_url or "")):
             d += 0.04
+        # For OBS/curriculum questions, prefer chunks that explicitly mention the target
+        # entity (e.g., Computer Engineering) and demote generic information-package pages.
+        if intents.academic_obs:
+            low_blob = blob.lower()
+            has_target = any(a and a.lower() in low_blob for a in intents.target_alias)
+            if has_target and _OBS_URL_RE.search(low_blob):
+                d -= 0.08
+            elif (
+                "information package" in low_blob
+                or "program learning outcomes" in low_blob
+                or "course structure" in low_blob
+            ):
+                # Enriched OBS programme pages legitimately contain these headings; do not
+                # demote when the URL is already a known target-program shell.
+                if not (
+                    intents.target_entity
+                    and _obs_url_matches_target_entity(str(ch.source_url or ""), intents)
+                ):
+                    d += 0.22
     if intents.whois_anchor and whois_name_in_content(
         str(ch.content or ""), intents.whois_anchor,
     ):
         d = min(d, 0.08)
     if int(ch.pk) in faculty_roster_pks:
         d = min(d, 0.12)
+    # If the user asks for curriculum/course content (OBS intent), generic staff pages
+    # should not outrank Bologna/course sources.
+    if intents.academic_obs and "academic-staff" in str(ch.source_url or "").lower():
+        d += 0.18
+    # For curriculum/course requests, non-OBS pages should generally rank below
+    # OBS/Bologna pages unless OBS has no useful evidence.
+    obs_blob = f"{ch.source_url or ''} {ch.page_title or ''}".lower()
+    if intents.academic_obs and not _OBS_URL_RE.search(obs_blob):
+        d += 0.24
+        # Strongly demote generic department intro pages that often hallucinate "lesson" answers.
+        if (
+            "message from head of department" in obs_blob
+            or "about | acıbadem" in obs_blob
+            or "about | acibadem" in obs_blob
+            or "faculty of engineering and natural sciences" in obs_blob
+        ):
+            d += 0.20
+    if intents.academic_obs and _OBS_URL_RE.search(obs_blob):
+        # Prefer concrete Bologna program endpoints (e.g. showPac, curSunit pages)
+        # over generic category pages under the same OBS host.
+        if _OBS_PROGRAM_DETAIL_RE.search(obs_blob):
+            d -= 0.10
+            # For entity-specific curriculum questions, penalize program-detail URLs
+            # that still do not mention the requested target (e.g. wrong curUnit/curSunit).
+            if intents.target_alias:
+                obs_target_blob = (
+                    f"{ch.source_url or ''}\n{ch.page_title or ''}\n{ch.content or ''}"
+                ).lower()
+                if not any(
+                    a and a.lower() in obs_target_blob for a in intents.target_alias
+                ):
+                    match_state = _obs_url_entity_match_state(str(ch.source_url or ""), intents)
+                    if match_state is False:
+                        d += 0.24
+        elif "information package" in obs_blob:
+            d += 0.08
     d += _obs_priority_adjustment(
         str(ch.source_url or ""), str(ch.page_title or ""),
         location_intent=intents.location,
         academic_obs_intent=intents.academic_obs,
     )
+    d += _obs_entity_code_adjustment(str(ch.source_url or ""), intents)
+    # Lesson/course-list questions: same programme may use curSunit=6247 for structure detail.
+    if (
+        intents.academic_obs
+        and intents.target_entity == "computer-engineering"
+        and _CE_CURRICULUM_QUERY_RE.search(intents.q_blob)
+    ):
+        ulow = (ch.source_url or "").lower()
+        if "cursunit=6247" in ulow:
+            d -= 0.09
     if intents.intl_ug_only and _GRADUATE_INTL_SOURCE_HINT.search(
         f"{ch.source_url or ''} {ch.page_title or ''}"
     ):
@@ -1504,6 +1707,22 @@ def _assemble_context(
             )
             if pos == 0 and neg > 0:
                 return
+        # Curriculum/course intent: keep context grounded on OBS program pages.
+        # For known entities (e.g. computer-engineering), prefer matching curUnit/curSunit.
+        if intents.academic_obs and intents.target_alias:
+            blob = f"{ch.page_title or ''}\n{raw}\n{u}".lower()
+            has_target_alias = any(
+                a and a.lower() in blob for a in intents.target_alias
+            )
+            if _OBS_URL_RE.search(u):
+                if _OBS_PROGRAM_DETAIL_RE.search(u):
+                    match_state = _obs_url_entity_match_state(u, intents)
+                    if match_state is False and not has_target_alias:
+                        return
+                elif not has_target_alias:
+                    return
+            else:
+                return
         # Snippet extraction
         if intents.whois_anchor and whois_name_in_content(
             raw, intents.whois_anchor,
@@ -1584,6 +1803,25 @@ def _assemble_context(
             try_add(ch, float(d))
             if total >= max_context_chars:
                 break
+
+    # If strict filters emptied the context on curriculum queries, force a small
+    # OBS-only fallback to avoid generic-knowledge answers.
+    if not context_parts and intents.academic_obs:
+        for ch in _academic_obs_fallback_chunks(intents, limit=3):
+            u = str(ch.source_url or "")
+            raw = str(ch.content or "")
+            if not raw or not u:
+                continue
+            title = str(ch.page_title or ch.source_url or "")
+            snippet = raw[:RAG_SNIPPET_CHARS]
+            context_parts.append(f"[{title}]\n{snippet}")
+            sources.append(
+                {
+                    "url": ch.source_url,
+                    "title": (title or "")[:200],
+                    "cosine_distance": round(float(real_dist.get(ch.pk, 0.9999)), 4),
+                }
+            )
 
     # ── Prepend intent blocks ──
     out = "\n\n".join(context_parts)

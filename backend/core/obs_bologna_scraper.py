@@ -6,6 +6,7 @@ import re
 import time
 from urllib.parse import parse_qs, urldefrag, urljoin, urlparse
 
+import requests
 from selenium.common.exceptions import (
     ElementClickInterceptedException,
     ElementNotInteractableException,
@@ -38,6 +39,7 @@ MAX_POSTBACK_CLICKS_PER_PASS = 120
 MAX_MENU_CLOSE_CLICKS = 80
 PAGE_READY_TIMEOUT = 45
 SHORT_WAIT = 12
+HTTP_TIMEOUT = 28
 
 # Embedded content uses dynConPage.aspx; program details use showPac in the URL.
 _DYNCON_RE = re.compile(r"dynConPage\.aspx\?[^\"'\\s<>]+", re.IGNORECASE)
@@ -49,6 +51,83 @@ _LOOSE_SHOWPAC_RE = re.compile(r"[^\s\"'<>]*showPac[^\s\"'<>]*", re.IGNORECASE)
 _UNITSEL_RE = re.compile(
     r"[^\s\"'<>]*unitSelection\.aspx[^\s\"'<>]*", re.IGNORECASE
 )
+
+
+def _http_get_text(url: str, timeout: float = HTTP_TIMEOUT) -> str:
+    """Plain HTTP GET for OBS HTML (works in Docker without Chrome)."""
+    r = requests.get(
+        url,
+        timeout=timeout,
+        headers={"User-Agent": USER_AGENT},
+    )
+    r.raise_for_status()
+    return r.text or ""
+
+
+def append_showpac_dyncon_via_http(
+    shell_html: str,
+    base_url: str,
+    *,
+    target_lang: str = "en",
+    max_detail: int = 25,
+    between_sleep: float = 0.12,
+) -> str:
+    """
+    showPac shell pages mostly list nav labels; real programme text lives on dynConPage.
+    Fetch those detail pages over HTTP and return appended plain text blocks.
+    """
+    if "showpac" not in (base_url or "").lower():
+        return ""
+    _sp, other = _urls_from_html_regex(shell_html, base_url)
+    detail_urls = [
+        u
+        for u in sorted(set(other))
+        if "dynconpage" in u.lower() and _preferred_lang(u, target_lang)
+    ][:max_detail]
+    blocks: list[str] = []
+    for du in detail_urls:
+        try:
+            if between_sleep > 0:
+                time.sleep(between_sleep)
+            d_html = _http_get_text(du)
+            d_title, d_text, _u = extract_title_text_and_embedding_units(d_html)
+            body = (d_text or "").strip()
+            if not body:
+                continue
+            d_head = (d_title or du)[:160]
+            blocks.append(f"[{d_head}]\n{body[:8000]}")
+        except Exception as e:
+            logger.warning("dynCon HTTP fetch failed %s: %s", du, e)
+            continue
+    return "\n\n".join(blocks)
+
+
+def fetch_page_extract_http(
+    url: str, delay: float = 0.12, target_lang: str = "en"
+) -> tuple[str, str, list[str]]:
+    """
+    Fetch a single OBS/Bologna URL with requests (no browser).
+    For showPac programme shells, merges linked dynConPage bodies.
+    """
+    try:
+        html = _http_get_text(url)
+    except Exception as e:
+        logger.warning("HTTP fetch failed %s: %s", url, e)
+        return url[:500], "", []
+    title, text, units = extract_title_text_and_embedding_units(html)
+    if "showpac" in (url or "").lower():
+        extra = append_showpac_dyncon_via_http(
+            html,
+            url,
+            target_lang=target_lang,
+            max_detail=25,
+            between_sleep=max(0.0, delay),
+        )
+        if extra:
+            text = f"{(text or '').strip()}\n\n{extra}".strip()
+    if not title:
+        title = url[:500]
+    return title, text, units
 
 
 def build_driver() -> WebDriver:
@@ -486,7 +565,12 @@ def collect_bologna_urls(
 
 
 def fetch_page_extract(
-    driver: WebDriver, url: str, delay: float, retries: int = 2
+    driver: WebDriver,
+    url: str,
+    delay: float,
+    retries: int = 2,
+    *,
+    target_lang: str = "en",
 ) -> tuple[str, str, list[str]]:
     """Navigate to url and return (title, text, embedding_units)."""
     last_exc: Exception | None = None
@@ -497,6 +581,18 @@ def fetch_page_extract(
             wait_for_page_ready(driver)
             html = driver.page_source
             title, text, units = extract_title_text_and_embedding_units(html)
+            # showPac pages are mostly a nav shell; dynConPage bodies carry programme text.
+            # Use HTTP (not extra Selenium navigations) so Docker without Chrome still works.
+            if "showpac" in (url or "").lower():
+                extra = append_showpac_dyncon_via_http(
+                    html,
+                    url,
+                    target_lang=target_lang or "en",
+                    max_detail=25,
+                    between_sleep=max(0.05, delay / 4),
+                )
+                if extra:
+                    text = f"{(text or '').strip()}\n\n{extra}".strip()
             if not title:
                 title = url[:500]
             return title, text, units
