@@ -6,6 +6,7 @@ rerank (word overlap + optional pg_trgm + cross-encoder), then char-budget fill.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -77,9 +78,11 @@ logger = logging.getLogger("core.rag")
 
 def _load_whois_name_chunks(anchor: str, out_limit: int, scan_limit: int = 200) -> list[DocumentChunk]:
     """
-    Rows mentioning this person, using first-name (or only token) as a DB filter, then
-    whois_name_in_content (Turkish/Latin fold) in Python. This catches 'Ziraksima' query
-    vs 'Zıraksıma' in HTML where SQL AND on ASCII tokens fails.
+    Rows mentioning this person: DB prefilter + whois_name_in_content (Turkish/Latin fold).
+
+    Important: for multi-token names we require *all* tokens in SQL (AND), not only the
+    first name. Short first tokens like "Ata" match huge unrelated sets; scanning the first
+    N rows by pk often misses the real faculty chunk entirely.
     """
     a = (anchor or "").strip()
     if not a or out_limit < 1:
@@ -87,15 +90,53 @@ def _load_whois_name_chunks(anchor: str, out_limit: int, scan_limit: int = 200) 
     parts = [p for p in a.split() if len(p) >= 2]
     if not parts:
         q = DocumentChunk.objects.filter(content__icontains=a)[:out_limit]
-        return [ch for ch in q if not is_rag_source_url_blocked(str(ch.source_url or ""))]
+        return [
+            ch
+            for ch in q
+            if not is_rag_source_url_blocked(str(ch.source_url or ""))
+            and whois_name_in_content(str(ch.content or ""), anchor)
+        ]
+
     out: list[DocumentChunk] = []
-    for ch in DocumentChunk.objects.filter(content__icontains=parts[0])[:scan_limit]:
+    seen: set[int] = set()
+    wide = max(scan_limit, min(1200, scan_limit * 6))
+
+    def try_append(ch: DocumentChunk) -> None:
+        if ch.pk in seen:
+            return
         if is_rag_source_url_blocked(str(ch.source_url or "")):
-            continue
-        if whois_name_in_content(str(ch.content or ""), anchor):
-            out.append(ch)
+            return
+        if not whois_name_in_content(str(ch.content or ""), anchor):
+            return
+        seen.add(ch.pk)
+        out.append(ch)
+
+    if len(parts) >= 2:
+        q_all = Q(content__icontains=parts[0])
+        for p in parts[1:]:
+            q_all &= Q(content__icontains=p)
+        for ch in DocumentChunk.objects.filter(q_all).order_by("pk")[:wide]:
+            if len(out) >= out_limit:
+                break
+            try_append(ch)
+        if out:
+            return out
+        for ch in (
+            DocumentChunk.objects.filter(content__icontains=parts[-1])
+            .order_by("pk")[:wide]
+        ):
+            if len(out) >= out_limit:
+                break
+            try_append(ch)
+        if out:
+            return out
+
+    for ch in (
+        DocumentChunk.objects.filter(content__icontains=parts[0]).order_by("pk")[:scan_limit]
+    ):
         if len(out) >= out_limit:
             break
+        try_append(ch)
     return out
 
 
@@ -147,6 +188,61 @@ _LEADERSHIP_CONTENT_RE = re.compile(
     r"vice\s*rector|yardımcı\s*rektör|fakülte|faculty\s+of",
     re.IGNORECASE,
 )
+# "Who is X?" — commissions / quota announcements often mention names in passing; deprioritize
+# vs academic-staff / message-from-head / department about pages (high-signal identity sources).
+_WHOIS_HIGH_SIGNAL_RE = re.compile(
+    r"academic-staff|message-from-head|head-of-department|/head-of-department|"
+    r"message\s+from\s+head|from\s+the\s+head|ode-to-the-department|"
+    r"bolum-baskan|bölüm\s*başkan|department\s+head\s+message",
+    re.IGNORECASE,
+)
+_WHOIS_LOW_SIGNAL_RE = re.compile(
+    r"commissions?\b|board-?of-?education|board_of_education|education-and-commissions|"
+    r"application[-\s]quotas|evaluation[-\s]schedule|quotas.*evaluation|"
+    r"have\s+been\s+announced|"
+    r"fall[-\s]semester.*20\d\d|academic[-\s]year.*announced|"
+    r"graduate\s+school\s+of\s+natural.*announc|"
+    r"alumni[-_\s]videos|double[-\s]major|minor[-\s]program|"
+    r"accreditation[-\s]certificate|"
+    r"klinik-arastirmalar|yo[ğg]un-bakim",
+    re.IGNORECASE,
+)
+
+
+def _whois_high_low_signal(url: str, page_title: str) -> tuple[bool, bool]:
+    blob = f"{url or ''}\n{page_title or ''}"
+    return (
+        bool(_WHOIS_HIGH_SIGNAL_RE.search(blob)),
+        bool(_WHOIS_LOW_SIGNAL_RE.search(blob)),
+    )
+
+
+def _whois_chunk_allowed_for_identity(ch: DocumentChunk, anchor: str) -> bool:
+    """
+    For person-identity questions: drop commission/quota/announcement noise even when the
+    name appears on a long roster; keep high-signal staff/head URLs; otherwise require the
+    name in title or body so vector "near misses" (dept home, unrelated pages) are removed.
+    """
+    u = str(ch.source_url or "")
+    t = str(ch.page_title or "")
+    hi, lo = _whois_high_low_signal(u, t)
+    if lo and not hi:
+        return False
+    if hi:
+        return True
+    blob = f"{t}\n{ch.content or ''}"
+    return whois_name_in_content(blob, anchor)
+
+
+def _filter_whois_identity_chunks(
+    pairs: list[tuple[DocumentChunk, float]],
+    anchor: str | None,
+) -> list[tuple[DocumentChunk, float]]:
+    if not anchor:
+        return pairs
+    return [(ch, d) for ch, d in pairs if _whois_chunk_allowed_for_identity(ch, anchor)]
+
+
 _DEPT_NAMES: list[tuple[str, str]] = [
     ("computer engineering", "bilgisayar mühendisliği"),
     ("electrical", "elektrik"),
@@ -820,6 +916,8 @@ class IntentPageBlocks:
     scholarship_block: str = ""
     scholarship_sources: list[dict] = field(default_factory=list)
     scholarship_skip: set[str] = field(default_factory=set)
+    whois_block: str = ""
+    whois_sources: list[dict] = field(default_factory=list)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1095,7 +1193,15 @@ def _effective_sort_distance(
     if intents.whois_anchor and whois_name_in_content(
         str(ch.content or ""), intents.whois_anchor,
     ):
-        d = min(d, 0.08)
+        hi, lo = _whois_high_low_signal(
+            str(ch.source_url or ""), str(ch.page_title or ""),
+        )
+        if lo and not hi:
+            d += 0.36
+        elif hi:
+            d = min(d, 0.05)
+        else:
+            d = min(d, 0.12)
     if int(ch.pk) in faculty_roster_pks:
         d = min(d, 0.12)
     # If the user asks for curriculum/course content (OBS intent), generic staff pages
@@ -1555,6 +1661,91 @@ def _fetch_intl_pages(
     return "\n\n".join(parts), sources
 
 
+WHOIS_FULL_PAGE_MAX = int(os.environ.get("RAG_WHOIS_FULL_PAGE_MAX", "14000"))
+
+
+def _fetch_whois_identity_block(anchor: str) -> tuple[str, list[dict]]:
+    """
+    Pull full HTML-stripped Page bodies that mention this person so “who is …?” answers
+    can cite title, department head message, and staff lists—not only small vector chunks.
+    """
+    a = (anchor or "").strip()
+    if not a:
+        return "", []
+    parts = [p for p in a.split() if len(p) >= 2]
+    if not parts:
+        return "", []
+
+    def _page_score(p: Page) -> tuple[int, int]:
+        u = (p.url or "").lower()
+        if "academic-staff" in u:
+            return (0, -len(u))
+        if "message-from-head" in u or "head-of-department" in u:
+            return (2, -len(u))
+        if "obs.acibadem.edu.tr" in u:
+            return (14, -len(u))
+        if "faculty" in u or "department" in u or "bolum" in u:
+            return (5, -len(u))
+        return (10, -len(u))
+
+    qs = Page.objects.all()
+    for p in parts:
+        qs = qs.filter(content__icontains=p)
+    candidates: list[Page] = list(
+        qs.exclude(url__icontains="robots").only("url", "title", "content").order_by("id")[:150],
+    )
+    candidates = [
+        p for p in candidates if whois_name_in_content(str(p.content or ""), a)
+    ]
+    if not candidates and len(parts) >= 2:
+        fallback = (
+            Page.objects.filter(content__icontains=parts[-1])
+            .exclude(url__icontains="robots")
+            .only("url", "title", "content")
+            .order_by("id")[:200]
+        )
+        candidates = [
+            p for p in fallback if whois_name_in_content(str(p.content or ""), a)
+        ]
+    if not candidates:
+        return "", []
+
+    candidates.sort(key=_page_score)
+    blocks: list[str] = []
+    sources: list[dict] = []
+    total_chars = 0
+    max_total = max(8000, WHOIS_FULL_PAGE_MAX)
+    per_page_cap = min(7000, max_total)
+
+    for page in candidates[:8]:
+        body = (page.content or "").strip()
+        if not body:
+            continue
+        title = str(page.title or page.url or "")[:220]
+        window = snippet_around_phrase(body, a, per_page_cap)
+        if not window.strip():
+            window = body[:per_page_cap]
+        block = (
+            f"[Full page extract — identity; use titles, roles, and department names from this text]\n"
+            f"[{title}]\n{window}"
+        )
+        if total_chars + len(block) > max_total and blocks:
+            break
+        blocks.append(block)
+        sources.append(
+            {
+                "url": str(page.url or ""),
+                "title": title,
+                "cosine_distance": 0.0,
+            }
+        )
+        total_chars += len(block)
+        if total_chars >= max_total:
+            break
+
+    return "\n\n".join(blocks), sources
+
+
 def _fetch_intent_page_blocks(
     intents: QueryIntents, faculty_path: str | None,
 ) -> IntentPageBlocks:
@@ -1571,6 +1762,9 @@ def _fetch_intent_page_blocks(
         _fetch_scholarship_page(intents)
     )
     intl_block, intl_sources = _fetch_intl_pages(intents, appreq_skip)
+    whois_block, whois_sources = ("", [])
+    if intents.whois_anchor:
+        whois_block, whois_sources = _fetch_whois_identity_block(intents.whois_anchor)
 
     return IntentPageBlocks(
         inject_block=inject_block,
@@ -1590,6 +1784,8 @@ def _fetch_intent_page_blocks(
         scholarship_block=scholarship_block,
         scholarship_sources=scholarship_sources,
         scholarship_skip=scholarship_skip,
+        whois_block=whois_block,
+        whois_sources=whois_sources,
     )
 
 
@@ -1885,6 +2081,12 @@ def _assemble_context(
                 },
             )
 
+    if blocks.whois_block:
+        out = f"{blocks.whois_block}\n\n{out}" if out else blocks.whois_block
+        head_u = {str(s.get("url") or "") for s in blocks.whois_sources if s.get("url")}
+        tail = [s for s in sources if str(s.get("url") or "") not in head_u]
+        sources = list(blocks.whois_sources) + tail
+
     return out, sources, used_relaxed, True
 
 
@@ -1948,6 +2150,10 @@ def search_document_chunks(
             vector_block, intents, composed_query, has_rows, vectors, dist_map,
         )
     )
+
+    if intents.whois_anchor:
+        ranked = _filter_whois_identity_chunks(ranked, intents.whois_anchor)
+        reranked = _filter_whois_identity_chunks(reranked, intents.whois_anchor)
 
     # Stage 5: fetch intent-specific full-page blocks
     page_blocks = _fetch_intent_page_blocks(intents, faculty_path)

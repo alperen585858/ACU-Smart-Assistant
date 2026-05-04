@@ -46,7 +46,6 @@ SYSTEM_BASE = (
 SYSTEM_RAG_USER_WRAPPER = (
     "You are the official Acıbadem Mehmet Ali Aydınlar University (ACU) website assistant. "
     "LANGUAGE: Default to polished, natural English for English questions—that is the usual case. "
-    "Use the same warm, human assistant tone in English as you would in Turkish: never dry or telegraphic. "
     "If the user’s question is clearly in Turkish only, answer in polite Turkish at the same warmth level. "
     "The user message contains crawled website excerpts, then the user’s question (marked with internal "
     "delimiters for your eyes only). "
@@ -106,7 +105,11 @@ SYSTEM_RAG_USER_WRAPPER = (
     "(13) If the user did not ask for graduate studies (master’s, PhD, graduate program), do not require that "
     "applicants already hold a specific bachelor’s or university degree in a subject; international "
     "undergraduate admission is normally about high school completion and listed entrance exams, unless the "
-    "excerpts clearly refer to the level the user asked for."
+    "excerpts clearly refer to the level the user asked for. "
+    "(14) “Who is [Name]?” / biography: use every role, title, department, unit, and education line about that "
+    "person that appears in the excerpts—summarize them in clear prose; do not stop at “is on academic staff” "
+    "if the excerpts list chair, Assoc. Prof., research, email, or duties. If excerpts only mention the name "
+    "in a list without a biography, say briefly what role is stated and quote the page type (e.g. committee list)."
 )
 
 SYSTEM_SMALLTALK = (
@@ -212,7 +215,7 @@ def _looks_english_only(text: str) -> bool:
 
 
 def compose_rag_search_query(current_message: str, prior_user_messages: list[str]) -> str:
-    prior = []  # Each question gets independent RAG search — no prior context bleeding
+    prior = [t.strip() for t in prior_user_messages if t.strip()][-2:]
     cur = (current_message or "").strip()
     merged = "\n".join(prior + [cur]) if (prior or cur) else ""
     if not merged:
@@ -320,66 +323,10 @@ def compose_rag_search_query(current_message: str, prior_user_messages: list[str
             f"{merged}\nComputer Engineering undergraduate "
             "faculty engineering program degree"
         )
-    elif re.search(r"study\s+abroad|exchange|erasmus|mobility|yurt\s*dışı", cur, re.IGNORECASE):
-        merged = (
-            f"{merged}\n"
-            "Erasmus+ exchange programs student mobility global exchange international office "
-            "study abroad partner universities agreements bilateral Erasmus charter"
-        )
-    elif re.search(r"english.*(course|program|lecture|taught)|courses?\s+in\s+english|language\s+of\s+instruction|taught\s+in\s+english", cur, re.IGNORECASE):
-        merged = (
-            f"{merged}\n"
-            "English programs tuition fees international students undergraduate degree "
-            "SCHOOL OF MEDICINE Medicine English 30000 USD "
-            "Computer Engineering English 12500 USD "
-            "Nursing English 8000 USD "
-            "Nutrition and Dietetics English 8000 USD "
-            "Physiotherapy English Psychology English Molecular Biology English "
-            "language of instruction program language fee"
-        )
-    elif re.search(r"support\s+service|student\s+service|student\s+support|counseling|guidance", cur, re.IGNORECASE):
-        merged = (
-            f"{merged}\n"
-            "student support services career center counseling guidance orientation "
-            "sports center health center clubs student life campus"
-        )
-    elif re.search(r"campus\s+life|student\s+life|activit|club|social", cur, re.IGNORECASE):
-        merged = (
-            f"{merged}\n"
-            "student clubs campus life activities sports center events "
-            "orientation student organizations social cultural"
-        )
-    elif re.search(r"graduat.*work|graduat.*industr|graduat.*career|alumni|where.*work|employment", cur, re.IGNORECASE):
-        merged = (
-            f"{merged}\n"
-            "career center graduates employment alumni industry placement "
-            "job opportunities career support internship"
-        )
-    elif re.search(r"partner|collaborat|agreement|cooperation", cur, re.IGNORECASE):
-        merged = (
-            f"{merged}\n"
-            "institutional agreements research collaborations international partnerships "
-            "partner universities bilateral exchange cooperation"
-        )
-    elif re.search(r"found|establish|when.*start|history|about\s+the\s+university", cur, re.IGNORECASE):
-        merged = (
-            f"{merged}\n"
-            "Acıbadem University founded 2007 established history about university "
-            "Kerem Aydınlar Istanbul private Acıbadem Healthcare Group"
-        )
-    elif re.search(r"public|private|state|vakıf|devlet", cur, re.IGNORECASE):
-        merged = (
-            f"{merged}\n"
-            "Acıbadem private foundation university vakıf üniversitesi "
-            "Acıbadem Healthcare Group founded 2007"
-        )
     elif RAG_DEPT_OR_FACULTY_INTENT_RE.search(cur):
         merged = (
-            f"{merged}\n"
-            "Undergraduate Programs School of Medicine Faculty of Pharmacy "
-            "Faculty of Health Sciences Faculty of Engineering and Natural Sciences "
-            "Faculty of Humanities and Social Sciences Graduate School "
-            "Vocational School departments faculties all academic units list"
+            f"{merged}\nfaculty school department Fakülte "
+            "programs schools list"
         )
     return merged
 
@@ -405,37 +352,12 @@ def _search_pages_with_meta(composed_query: str, raw_user_query: str = "") -> tu
     return search_document_chunks(composed_query, raw_user_query or None)
 
 
-def _filter_turkish_lines(context: str) -> str:
-    """Remove lines that are predominantly Turkish to prevent language mixing in responses."""
-    turkish_chars = re.compile(r"[çğıöşüÇĞİÖŞÜ]")
-    turkish_words = re.compile(
-        r"\b(ve|ile|bir|olan|için|veya|yer|olan|gibi|olarak|"
-        r"görev|akademik|üniversite|fakülte|bölüm|komisyon|başkan|"
-        r"almaktadır|bulunmaktadır|yapılmaktadır|oluşmaktadır)\b",
-        re.IGNORECASE,
-    )
-    lines = context.split("\n")
-    filtered = []
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            filtered.append(line)
-            continue
-        turkish_char_count = len(turkish_chars.findall(stripped))
-        turkish_word_count = len(turkish_words.findall(stripped))
-        # Skip lines with heavy Turkish content
-        if turkish_char_count > 3 and turkish_word_count > 2:
-            continue
-        filtered.append(line)
-    return "\n".join(filtered)
-
-
 def _wrap_user_with_rag_context(context: str, user_plain: str) -> str:
-    context = _filter_turkish_lines(context)
     footer = (
         "\n===END_QUESTION===\n"
-        "Now write your reply to the user in ENGLISH ONLY. Use only facts from the excerpts above. "
-        "Translate any Turkish content to English. Never include Turkish words in your response. "
+        "Now write your reply to the user. Use only facts from the excerpts above. "
+        "If the question is in English, write in warm, natural English (not terse): optional one-line opener, "
+        "then facts, then one short English offer to help further. Same idea in Turkish for Turkish questions. "
         "Do not repeat the words ===CONTEXT=== or ===QUESTION=== in your reply. "
         "If the question is broad, summarize what the excerpts actually state. "
         "Follow the system message for opening and closing (except when using the exact refusal). "
