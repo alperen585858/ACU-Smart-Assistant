@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
+import shutil
+import sys
 import time
 from urllib.parse import parse_qs, urldefrag, urljoin, urlparse
 
@@ -10,6 +13,7 @@ import requests
 from selenium.common.exceptions import (
     ElementClickInterceptedException,
     ElementNotInteractableException,
+    NoSuchDriverException,
     StaleElementReferenceException,
     TimeoutException,
     WebDriverException,
@@ -131,6 +135,12 @@ def fetch_page_extract_http(
 
 
 def build_driver() -> WebDriver:
+    """Headless Chrome/Chromium. Docker slim has no browser; use host or an image with chromium.
+
+    Env: CHROME_BINARY / GOOGLE_CHROME_BIN / CHROMIUM_BIN — browser executable.
+    Env: CHROMEDRIVER_PATH — chromedriver executable (skips Selenium Manager when set).
+    Falls back to PATH ``chromedriver``, then Selenium Manager, then ``webdriver-manager``.
+    """
     from selenium import webdriver
 
     opts = Options()
@@ -141,8 +151,47 @@ def build_driver() -> WebDriver:
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument(f"--user-agent={USER_AGENT}")
     opts.add_experimental_option("excludeSwitches", ["enable-automation"])
-    service = Service()
-    return webdriver.Chrome(service=service, options=opts)
+
+    chrome_bin = (
+        os.environ.get("CHROME_BINARY")
+        or os.environ.get("GOOGLE_CHROME_BIN")
+        or os.environ.get("CHROMIUM_BIN")
+    )
+    if not chrome_bin and sys.platform == "darwin":
+        mac_chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        if os.path.isfile(mac_chrome):
+            chrome_bin = mac_chrome
+    if chrome_bin:
+        opts.binary_location = chrome_bin
+
+    def _launch(service: Service) -> WebDriver:
+        return webdriver.Chrome(service=service, options=opts)
+
+    drv = os.environ.get("CHROMEDRIVER_PATH", "").strip()
+    if drv and os.path.isfile(drv):
+        return _launch(Service(executable_path=drv))
+
+    which_drv = shutil.which("chromedriver")
+    if which_drv:
+        return _launch(Service(executable_path=which_drv))
+
+    try:
+        return _launch(Service())
+    except (WebDriverException, NoSuchDriverException, OSError):
+        pass
+
+    try:
+        from webdriver_manager.chrome import ChromeDriverManager
+
+        return _launch(Service(ChromeDriverManager().install()))
+    except ImportError as exc:
+        raise RuntimeError(
+            "Chrome veya chromedriver bulunamadı. macOS’ta Google Chrome kurun; "
+            "veya CHROMEDRIVER_PATH / PATH üzerinde chromedriver tanımlayın. "
+            "Docker’daki python:slim imajında tarayıcı yok — bu scraper’ları host’ta "
+            "çalıştırın (venv) ve POSTGRES_* ile Docker DB’ye bağlanın; veya "
+            "imaja Chromium ekleyin."
+        ) from exc
 
 
 def normalize_obs_url(href: str, base: str) -> str:
