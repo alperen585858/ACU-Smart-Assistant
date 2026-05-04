@@ -32,7 +32,7 @@ RAG_LOCATION_CONTACT_INTENT_RE = re.compile(
 )
 
 RAG_ACADEMIC_OBS_INTENT_RE = re.compile(
-    r"\b(obs|oibs|bologna|course|courses|curriculum|syllabus|ects|catalog|"
+    r"\b(obs|oibs|bologna|course|courses|curriculum|syllabus|lesson|lessons|module|modules|ects|catalog|"
     r"programme?\s+structure|program\s+outcomes?|learning\s+outcomes?|"
     r"ders|dersler|müfredat|mufredat|akts|katalog|kazan[ıi]m)\b",
     re.IGNORECASE,

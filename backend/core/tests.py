@@ -405,6 +405,34 @@ class TestRagQueryExpand(unittest.TestCase):
             whois_name_in_content("Öğr. Gör. Dr. Mahsa Zıraksıma Akreditasyon", "mahsa ziraksima")
         )
 
+    def test_whois_identity_filter_drops_governance_noise(self):
+        from types import SimpleNamespace
+
+        from core.rag_retrieval import _whois_chunk_allowed_for_identity
+
+        comm = SimpleNamespace(
+            source_url="https://acibadem.edu.tr/en/foo/commissions",
+            page_title="Commissions | ACU",
+            content="Assoc. Prof. Ahmet Bulut is listed here.",
+        )
+        self.assertFalse(_whois_chunk_allowed_for_identity(comm, "Ahmet Bulut"))
+        quota = SimpleNamespace(
+            source_url="https://acibadem.edu.tr/en/news/foo",
+            page_title=(
+                "The application quotas and evaluation schedule for the Fall Semester "
+                "of the 2025–2026 Academic Year of our University's Institute "
+                "of Social Sciences have been announced"
+            ),
+            content="Ahmet Bulut",
+        )
+        self.assertFalse(_whois_chunk_allowed_for_identity(quota, "Ahmet Bulut"))
+        staff = SimpleNamespace(
+            source_url="https://acibadem.edu.tr/en/dept/computer-engineering/academic-staff",
+            page_title="Academic Staff",
+            content="Other text",
+        )
+        self.assertTrue(_whois_chunk_allowed_for_identity(staff, "Ahmet Bulut"))
+
     def test_acibadem_js_seed_urls_match_db_normalization(self):
         from core.acibadem_js_scraper import ACIBADEM_JS_URLS
 

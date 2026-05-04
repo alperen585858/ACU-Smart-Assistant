@@ -89,7 +89,10 @@ class Command(BaseCommand):
             for url in urls:
                 try:
                     title, text, embedding_units = fetch_page_extract(
-                        driver, url, delay
+                        driver,
+                        url,
+                        delay,
+                        target_lang=(options.get("lang") or "en"),
                     )
                 except Exception as exc:
                     failed += 1

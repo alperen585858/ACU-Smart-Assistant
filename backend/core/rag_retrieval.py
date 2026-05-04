@@ -6,9 +6,11 @@ rerank (word overlap + optional pg_trgm + cross-encoder), then char-budget fill.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass, field
+from urllib.parse import parse_qs, urlparse
 
 from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector
 from django.db import connection
@@ -76,9 +78,11 @@ logger = logging.getLogger("core.rag")
 
 def _load_whois_name_chunks(anchor: str, out_limit: int, scan_limit: int = 200) -> list[DocumentChunk]:
     """
-    Rows mentioning this person, using first-name (or only token) as a DB filter, then
-    whois_name_in_content (Turkish/Latin fold) in Python. This catches 'Ziraksima' query
-    vs 'Zıraksıma' in HTML where SQL AND on ASCII tokens fails.
+    Rows mentioning this person: DB prefilter + whois_name_in_content (Turkish/Latin fold).
+
+    Important: for multi-token names we require *all* tokens in SQL (AND), not only the
+    first name. Short first tokens like "Ata" match huge unrelated sets; scanning the first
+    N rows by pk often misses the real faculty chunk entirely.
     """
     a = (anchor or "").strip()
     if not a or out_limit < 1:
@@ -86,15 +90,53 @@ def _load_whois_name_chunks(anchor: str, out_limit: int, scan_limit: int = 200) 
     parts = [p for p in a.split() if len(p) >= 2]
     if not parts:
         q = DocumentChunk.objects.filter(content__icontains=a)[:out_limit]
-        return [ch for ch in q if not is_rag_source_url_blocked(str(ch.source_url or ""))]
+        return [
+            ch
+            for ch in q
+            if not is_rag_source_url_blocked(str(ch.source_url or ""))
+            and whois_name_in_content(str(ch.content or ""), anchor)
+        ]
+
     out: list[DocumentChunk] = []
-    for ch in DocumentChunk.objects.filter(content__icontains=parts[0])[:scan_limit]:
+    seen: set[int] = set()
+    wide = max(scan_limit, min(1200, scan_limit * 6))
+
+    def try_append(ch: DocumentChunk) -> None:
+        if ch.pk in seen:
+            return
         if is_rag_source_url_blocked(str(ch.source_url or "")):
-            continue
-        if whois_name_in_content(str(ch.content or ""), anchor):
-            out.append(ch)
+            return
+        if not whois_name_in_content(str(ch.content or ""), anchor):
+            return
+        seen.add(ch.pk)
+        out.append(ch)
+
+    if len(parts) >= 2:
+        q_all = Q(content__icontains=parts[0])
+        for p in parts[1:]:
+            q_all &= Q(content__icontains=p)
+        for ch in DocumentChunk.objects.filter(q_all).order_by("pk")[:wide]:
+            if len(out) >= out_limit:
+                break
+            try_append(ch)
+        if out:
+            return out
+        for ch in (
+            DocumentChunk.objects.filter(content__icontains=parts[-1])
+            .order_by("pk")[:wide]
+        ):
+            if len(out) >= out_limit:
+                break
+            try_append(ch)
+        if out:
+            return out
+
+    for ch in (
+        DocumentChunk.objects.filter(content__icontains=parts[0]).order_by("pk")[:scan_limit]
+    ):
         if len(out) >= out_limit:
             break
+        try_append(ch)
     return out
 
 
@@ -146,6 +188,61 @@ _LEADERSHIP_CONTENT_RE = re.compile(
     r"vice\s*rector|yardımcı\s*rektör|fakülte|faculty\s+of",
     re.IGNORECASE,
 )
+# "Who is X?" — commissions / quota announcements often mention names in passing; deprioritize
+# vs academic-staff / message-from-head / department about pages (high-signal identity sources).
+_WHOIS_HIGH_SIGNAL_RE = re.compile(
+    r"academic-staff|message-from-head|head-of-department|/head-of-department|"
+    r"message\s+from\s+head|from\s+the\s+head|ode-to-the-department|"
+    r"bolum-baskan|bölüm\s*başkan|department\s+head\s+message",
+    re.IGNORECASE,
+)
+_WHOIS_LOW_SIGNAL_RE = re.compile(
+    r"commissions?\b|board-?of-?education|board_of_education|education-and-commissions|"
+    r"application[-\s]quotas|evaluation[-\s]schedule|quotas.*evaluation|"
+    r"have\s+been\s+announced|"
+    r"fall[-\s]semester.*20\d\d|academic[-\s]year.*announced|"
+    r"graduate\s+school\s+of\s+natural.*announc|"
+    r"alumni[-_\s]videos|double[-\s]major|minor[-\s]program|"
+    r"accreditation[-\s]certificate|"
+    r"klinik-arastirmalar|yo[ğg]un-bakim",
+    re.IGNORECASE,
+)
+
+
+def _whois_high_low_signal(url: str, page_title: str) -> tuple[bool, bool]:
+    blob = f"{url or ''}\n{page_title or ''}"
+    return (
+        bool(_WHOIS_HIGH_SIGNAL_RE.search(blob)),
+        bool(_WHOIS_LOW_SIGNAL_RE.search(blob)),
+    )
+
+
+def _whois_chunk_allowed_for_identity(ch: DocumentChunk, anchor: str) -> bool:
+    """
+    For person-identity questions: drop commission/quota/announcement noise even when the
+    name appears on a long roster; keep high-signal staff/head URLs; otherwise require the
+    name in title or body so vector "near misses" (dept home, unrelated pages) are removed.
+    """
+    u = str(ch.source_url or "")
+    t = str(ch.page_title or "")
+    hi, lo = _whois_high_low_signal(u, t)
+    if lo and not hi:
+        return False
+    if hi:
+        return True
+    blob = f"{t}\n{ch.content or ''}"
+    return whois_name_in_content(blob, anchor)
+
+
+def _filter_whois_identity_chunks(
+    pairs: list[tuple[DocumentChunk, float]],
+    anchor: str | None,
+) -> list[tuple[DocumentChunk, float]]:
+    if not anchor:
+        return pairs
+    return [(ch, d) for ch, d in pairs if _whois_chunk_allowed_for_identity(ch, anchor)]
+
+
 _DEPT_NAMES: list[tuple[str, str]] = [
     ("computer engineering", "bilgisayar mühendisliği"),
     ("electrical", "elektrik"),
@@ -407,6 +504,18 @@ def _embedding_variants(composed: str, raw_user: str | None) -> list[str]:
         )
         if fee_all.casefold() not in {v.casefold() for v in variants}:
             variants.append(fee_all)
+    # OBS Computer Engineering: steer vector search toward Bologna course/module vocabulary.
+    if (
+        RAG_ACADEMIC_OBS_INTENT_RE.search(fl_blob)
+        and extract_target_entity_key(fl_blob) == "computer-engineering"
+    ):
+        obs_ce = (
+            "Acıbadem University Computer Engineering undergraduate Bologna programme "
+            "course structure curriculum semester modules ECTS course codes syllabus "
+            "programme learning outcomes degree requirements"
+        )
+        if obs_ce.casefold() not in {v.casefold() for v in variants}:
+            variants.append(obs_ce)
     # Dedupe preserving order
     seen: set[str] = set()
     out: list[str] = []
@@ -505,6 +614,26 @@ _OBS_URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+_OBS_PROGRAM_DETAIL_RE = re.compile(
+    r"showpac|curop=showpac|cursunit=\d+|curunit=\d+",
+    re.IGNORECASE,
+)
+
+_CE_CURRICULUM_QUERY_RE = re.compile(
+    r"\blessons?\b|\bcourses?\b|curriculum|modules?|\bects\b|syllabus|müfredat|ders",
+    re.IGNORECASE,
+)
+
+# Entity-specific OBS program code hints.
+# These codes are stable enough to de-prioritize clearly wrong program links.
+# curUnit=14 Computer Engineering uses several curSunit shells (overview vs sections).
+_OBS_ENTITY_CODE_HINTS: dict[str, dict[str, set[str]]] = {
+    "computer-engineering": {
+        "curunit": {"14"},
+        "cursunit": {"6246", "6247", "6248"},
+    },
+}
+
 _LOCATION_AUTH_HINT_RE = re.compile(
     r"contact|iletisim|iletişim|address|adres|transport|ula[şs][ıi]m|campus|konum|location",
     re.IGNORECASE,
@@ -553,8 +682,113 @@ def _obs_priority_adjustment(url: str, title: str, *, location_intent: bool, aca
     if location_intent:
         return 0.22
     if academic_obs_intent:
+        # For curriculum questions, reward program-detail OBS pages more than
+        # generic index/info pages.
+        if _OBS_PROGRAM_DETAIL_RE.search(blob):
+            return -0.16
         return -0.10
     return 0.03
+
+
+def _obs_entity_code_adjustment(url: str, intents: QueryIntents) -> float:
+    """
+    OBS program-detail URL tuning by target entity code hints.
+    Negative => promote, positive => demote.
+    """
+    if not intents.academic_obs or not intents.target_entity:
+        return 0.0
+    if not _OBS_PROGRAM_DETAIL_RE.search(url or ""):
+        return 0.0
+    hints = _OBS_ENTITY_CODE_HINTS.get(intents.target_entity)
+    if not hints:
+        return 0.0
+    parsed = urlparse(str(url or ""))
+    q = parse_qs(parsed.query or "")
+    curunit = (q.get("curUnit") or q.get("curunit") or [""])[0].strip()
+    cursunit = (q.get("curSunit") or q.get("cursunit") or [""])[0].strip()
+
+    score = 0.0
+    unit_hints = hints.get("curunit") or set()
+    sunit_hints = hints.get("cursunit") or set()
+
+    if curunit:
+        score += -0.20 if curunit in unit_hints else 0.50
+    if cursunit:
+        score += -0.14 if cursunit in sunit_hints else 0.34
+    return score
+
+
+def _obs_url_matches_target_entity(url: str, intents: QueryIntents) -> bool:
+    """
+    True when OBS URL query params match known target entity codes.
+    If no hints exist for that entity, return False.
+    """
+    if not intents.target_entity:
+        return False
+    hints = _OBS_ENTITY_CODE_HINTS.get(intents.target_entity)
+    if not hints:
+        return False
+    parsed = urlparse(str(url or ""))
+    q = parse_qs(parsed.query or "")
+    curunit = (q.get("curUnit") or q.get("curunit") or [""])[0].strip()
+    cursunit = (q.get("curSunit") or q.get("cursunit") or [""])[0].strip()
+    unit_hints = hints.get("curunit") or set()
+    sunit_hints = hints.get("cursunit") or set()
+    return bool(
+        (curunit and curunit in unit_hints)
+        or (cursunit and cursunit in sunit_hints)
+    )
+
+
+def _obs_url_entity_match_state(url: str, intents: QueryIntents) -> bool | None:
+    """
+    Tri-state entity match for OBS URLs:
+    - True  : URL matches known entity code hints
+    - False : URL has comparable codes but mismatches hints
+    - None  : no reliable hint or no comparable URL params
+    """
+    if not intents.target_entity:
+        return None
+    hints = _OBS_ENTITY_CODE_HINTS.get(intents.target_entity)
+    if not hints:
+        return None
+    parsed = urlparse(str(url or ""))
+    q = parse_qs(parsed.query or "")
+    curunit = (q.get("curUnit") or q.get("curunit") or [""])[0].strip()
+    cursunit = (q.get("curSunit") or q.get("cursunit") or [""])[0].strip()
+    if not curunit and not cursunit:
+        return None
+    return _obs_url_matches_target_entity(url, intents)
+
+
+def _academic_obs_fallback_chunks(intents: QueryIntents, limit: int = 3) -> list[DocumentChunk]:
+    """
+    Last-resort OBS fallback for curriculum queries when ranking yields no usable context.
+    Prefers program-detail OBS URLs and entity-matching code hints.
+    """
+    if not intents.academic_obs:
+        return []
+
+    qs = (
+        DocumentChunk.objects.filter(source_url__icontains="obs.acibadem.edu.tr")
+        .filter(source_url__icontains="showPac")
+        .only("pk", "content", "page_title", "source_url")
+    )
+    out: list[DocumentChunk] = []
+    for ch in qs.iterator(chunk_size=200):
+        u = str(ch.source_url or "")
+        if is_rag_source_url_blocked(u):
+            continue
+        if intents.target_alias:
+            blob = f"{ch.page_title or ''}\n{ch.content or ''}\n{u}".lower()
+            has_alias = any(a and a.lower() in blob for a in intents.target_alias)
+            match_state = _obs_url_entity_match_state(u, intents)
+            if match_state is False and not has_alias:
+                continue
+        out.append(ch)
+        if len(out) >= max(1, limit):
+            break
+    return out
 
 
 def _rerank_items(
@@ -682,6 +916,8 @@ class IntentPageBlocks:
     scholarship_block: str = ""
     scholarship_sources: list[dict] = field(default_factory=list)
     scholarship_skip: set[str] = field(default_factory=set)
+    whois_block: str = ""
+    whois_sources: list[dict] = field(default_factory=list)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -935,17 +1171,90 @@ def _effective_sort_distance(
         d = d - min(0.06, 0.02 * pos) + min(0.04, 0.01 * neg)
         if _ENTITY_NOISE_SOURCE_RE.search(str(ch.source_url or "")):
             d += 0.04
+        # For OBS/curriculum questions, prefer chunks that explicitly mention the target
+        # entity (e.g., Computer Engineering) and demote generic information-package pages.
+        if intents.academic_obs:
+            low_blob = blob.lower()
+            has_target = any(a and a.lower() in low_blob for a in intents.target_alias)
+            if has_target and _OBS_URL_RE.search(low_blob):
+                d -= 0.08
+            elif (
+                "information package" in low_blob
+                or "program learning outcomes" in low_blob
+                or "course structure" in low_blob
+            ):
+                # Enriched OBS programme pages legitimately contain these headings; do not
+                # demote when the URL is already a known target-program shell.
+                if not (
+                    intents.target_entity
+                    and _obs_url_matches_target_entity(str(ch.source_url or ""), intents)
+                ):
+                    d += 0.22
     if intents.whois_anchor and whois_name_in_content(
         str(ch.content or ""), intents.whois_anchor,
     ):
-        d = min(d, 0.08)
+        hi, lo = _whois_high_low_signal(
+            str(ch.source_url or ""), str(ch.page_title or ""),
+        )
+        if lo and not hi:
+            d += 0.36
+        elif hi:
+            d = min(d, 0.05)
+        else:
+            d = min(d, 0.12)
     if int(ch.pk) in faculty_roster_pks:
         d = min(d, 0.12)
+    # If the user asks for curriculum/course content (OBS intent), generic staff pages
+    # should not outrank Bologna/course sources.
+    if intents.academic_obs and "academic-staff" in str(ch.source_url or "").lower():
+        d += 0.18
+    # For curriculum/course requests, non-OBS pages should generally rank below
+    # OBS/Bologna pages unless OBS has no useful evidence.
+    obs_blob = f"{ch.source_url or ''} {ch.page_title or ''}".lower()
+    if intents.academic_obs and not _OBS_URL_RE.search(obs_blob):
+        d += 0.24
+        # Strongly demote generic department intro pages that often hallucinate "lesson" answers.
+        if (
+            "message from head of department" in obs_blob
+            or "about | acıbadem" in obs_blob
+            or "about | acibadem" in obs_blob
+            or "faculty of engineering and natural sciences" in obs_blob
+        ):
+            d += 0.20
+    if intents.academic_obs and _OBS_URL_RE.search(obs_blob):
+        # Prefer concrete Bologna program endpoints (e.g. showPac, curSunit pages)
+        # over generic category pages under the same OBS host.
+        if _OBS_PROGRAM_DETAIL_RE.search(obs_blob):
+            d -= 0.10
+            # For entity-specific curriculum questions, penalize program-detail URLs
+            # that still do not mention the requested target (e.g. wrong curUnit/curSunit).
+            if intents.target_alias:
+                obs_target_blob = (
+                    f"{ch.source_url or ''}\n{ch.page_title or ''}\n{ch.content or ''}"
+                ).lower()
+                if not any(
+                    a and a.lower() in obs_target_blob for a in intents.target_alias
+                ):
+                    match_state = _obs_url_entity_match_state(str(ch.source_url or ""), intents)
+                    if match_state is False:
+                        d += 0.24
+        elif "information package" in obs_blob:
+            d += 0.08
     d += _obs_priority_adjustment(
         str(ch.source_url or ""), str(ch.page_title or ""),
         location_intent=intents.location,
         academic_obs_intent=intents.academic_obs,
     )
+    d += _obs_entity_code_adjustment(str(ch.source_url or ""), intents)
+    # Lesson/course-list questions: same programme may use curSunit=6247 for structure detail.
+    if (
+        intents.academic_obs
+        and intents.target_entity == "computer-engineering"
+        and _CE_CURRICULUM_QUERY_RE.search(intents.q_blob)
+    ):
+        ulow = (ch.source_url or "").lower()
+        if "cursunit=6247" in ulow:
+            d -= 0.09
     if intents.intl_ug_only and _GRADUATE_INTL_SOURCE_HINT.search(
         f"{ch.source_url or ''} {ch.page_title or ''}"
     ):
@@ -1352,6 +1661,91 @@ def _fetch_intl_pages(
     return "\n\n".join(parts), sources
 
 
+WHOIS_FULL_PAGE_MAX = int(os.environ.get("RAG_WHOIS_FULL_PAGE_MAX", "14000"))
+
+
+def _fetch_whois_identity_block(anchor: str) -> tuple[str, list[dict]]:
+    """
+    Pull full HTML-stripped Page bodies that mention this person so “who is …?” answers
+    can cite title, department head message, and staff lists—not only small vector chunks.
+    """
+    a = (anchor or "").strip()
+    if not a:
+        return "", []
+    parts = [p for p in a.split() if len(p) >= 2]
+    if not parts:
+        return "", []
+
+    def _page_score(p: Page) -> tuple[int, int]:
+        u = (p.url or "").lower()
+        if "academic-staff" in u:
+            return (0, -len(u))
+        if "message-from-head" in u or "head-of-department" in u:
+            return (2, -len(u))
+        if "obs.acibadem.edu.tr" in u:
+            return (14, -len(u))
+        if "faculty" in u or "department" in u or "bolum" in u:
+            return (5, -len(u))
+        return (10, -len(u))
+
+    qs = Page.objects.all()
+    for p in parts:
+        qs = qs.filter(content__icontains=p)
+    candidates: list[Page] = list(
+        qs.exclude(url__icontains="robots").only("url", "title", "content").order_by("id")[:150],
+    )
+    candidates = [
+        p for p in candidates if whois_name_in_content(str(p.content or ""), a)
+    ]
+    if not candidates and len(parts) >= 2:
+        fallback = (
+            Page.objects.filter(content__icontains=parts[-1])
+            .exclude(url__icontains="robots")
+            .only("url", "title", "content")
+            .order_by("id")[:200]
+        )
+        candidates = [
+            p for p in fallback if whois_name_in_content(str(p.content or ""), a)
+        ]
+    if not candidates:
+        return "", []
+
+    candidates.sort(key=_page_score)
+    blocks: list[str] = []
+    sources: list[dict] = []
+    total_chars = 0
+    max_total = max(8000, WHOIS_FULL_PAGE_MAX)
+    per_page_cap = min(7000, max_total)
+
+    for page in candidates[:8]:
+        body = (page.content or "").strip()
+        if not body:
+            continue
+        title = str(page.title or page.url or "")[:220]
+        window = snippet_around_phrase(body, a, per_page_cap)
+        if not window.strip():
+            window = body[:per_page_cap]
+        block = (
+            f"[Full page extract — identity; use titles, roles, and department names from this text]\n"
+            f"[{title}]\n{window}"
+        )
+        if total_chars + len(block) > max_total and blocks:
+            break
+        blocks.append(block)
+        sources.append(
+            {
+                "url": str(page.url or ""),
+                "title": title,
+                "cosine_distance": 0.0,
+            }
+        )
+        total_chars += len(block)
+        if total_chars >= max_total:
+            break
+
+    return "\n\n".join(blocks), sources
+
+
 def _fetch_intent_page_blocks(
     intents: QueryIntents, faculty_path: str | None,
 ) -> IntentPageBlocks:
@@ -1368,6 +1762,9 @@ def _fetch_intent_page_blocks(
         _fetch_scholarship_page(intents)
     )
     intl_block, intl_sources = _fetch_intl_pages(intents, appreq_skip)
+    whois_block, whois_sources = ("", [])
+    if intents.whois_anchor:
+        whois_block, whois_sources = _fetch_whois_identity_block(intents.whois_anchor)
 
     return IntentPageBlocks(
         inject_block=inject_block,
@@ -1387,6 +1784,8 @@ def _fetch_intent_page_blocks(
         scholarship_block=scholarship_block,
         scholarship_sources=scholarship_sources,
         scholarship_skip=scholarship_skip,
+        whois_block=whois_block,
+        whois_sources=whois_sources,
     )
 
 
@@ -1504,6 +1903,22 @@ def _assemble_context(
             )
             if pos == 0 and neg > 0:
                 return
+        # Curriculum/course intent: keep context grounded on OBS program pages.
+        # For known entities (e.g. computer-engineering), prefer matching curUnit/curSunit.
+        if intents.academic_obs and intents.target_alias:
+            blob = f"{ch.page_title or ''}\n{raw}\n{u}".lower()
+            has_target_alias = any(
+                a and a.lower() in blob for a in intents.target_alias
+            )
+            if _OBS_URL_RE.search(u):
+                if _OBS_PROGRAM_DETAIL_RE.search(u):
+                    match_state = _obs_url_entity_match_state(u, intents)
+                    if match_state is False and not has_target_alias:
+                        return
+                elif not has_target_alias:
+                    return
+            else:
+                return
         # Snippet extraction
         if intents.whois_anchor and whois_name_in_content(
             raw, intents.whois_anchor,
@@ -1585,6 +2000,25 @@ def _assemble_context(
             if total >= max_context_chars:
                 break
 
+    # If strict filters emptied the context on curriculum queries, force a small
+    # OBS-only fallback to avoid generic-knowledge answers.
+    if not context_parts and intents.academic_obs:
+        for ch in _academic_obs_fallback_chunks(intents, limit=3):
+            u = str(ch.source_url or "")
+            raw = str(ch.content or "")
+            if not raw or not u:
+                continue
+            title = str(ch.page_title or ch.source_url or "")
+            snippet = raw[:RAG_SNIPPET_CHARS]
+            context_parts.append(f"[{title}]\n{snippet}")
+            sources.append(
+                {
+                    "url": ch.source_url,
+                    "title": (title or "")[:200],
+                    "cosine_distance": round(float(real_dist.get(ch.pk, 0.9999)), 4),
+                }
+            )
+
     # ── Prepend intent blocks ──
     out = "\n\n".join(context_parts)
     if blocks.scholarship_block:
@@ -1646,6 +2080,12 @@ def _assemble_context(
                     "cosine_distance": 0.0,
                 },
             )
+
+    if blocks.whois_block:
+        out = f"{blocks.whois_block}\n\n{out}" if out else blocks.whois_block
+        head_u = {str(s.get("url") or "") for s in blocks.whois_sources if s.get("url")}
+        tail = [s for s in sources if str(s.get("url") or "") not in head_u]
+        sources = list(blocks.whois_sources) + tail
 
     return out, sources, used_relaxed, True
 
@@ -1710,6 +2150,10 @@ def search_document_chunks(
             vector_block, intents, composed_query, has_rows, vectors, dist_map,
         )
     )
+
+    if intents.whois_anchor:
+        ranked = _filter_whois_identity_chunks(ranked, intents.whois_anchor)
+        reranked = _filter_whois_identity_chunks(reranked, intents.whois_anchor)
 
     # Stage 5: fetch intent-specific full-page blocks
     page_blocks = _fetch_intent_page_blocks(intents, faculty_path)
