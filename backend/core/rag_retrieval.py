@@ -20,6 +20,7 @@ from pgvector.django import CosineDistance
 from core.embeddings import embed_texts
 from core.models import DocumentChunk, Page
 from core.rag_config import (
+    RAG_ACADEMIC_OBS_FALLBACK_LIMIT,
     RAG_BM25_HYBRID,
     RAG_CROSS_ENCODER_RERANK,
     RAG_CROSS_ENCODER_WEIGHT,
@@ -30,6 +31,7 @@ from core.rag_config import (
     RAG_MAX_DISTANCE,
     RAG_MULTI_EMBED,
     RAG_MULTI_EMBED_KEYWORD_LINE,
+    RAG_OBS_VECTOR_PREFILTER,
     RAG_RELAX_ON_EMPTY,
     RAG_RERANK_OVERLAP_WEIGHT,
     RAG_SNIPPET_CHARS,
@@ -569,6 +571,24 @@ def _merge_best_distances(vectors: list[list[float]], per_vector_pool: int) -> d
     return best
 
 
+def _merge_obs_host_vector_pool(primary_vector: list[float], limit: int) -> dict[int, float]:
+    """Top cosine-distance hits restricted to obs.acibadem.edu.tr chunks."""
+    if not primary_vector or limit < 1:
+        return {}
+    out: dict[int, float] = {}
+    qs = (
+        DocumentChunk.objects.filter(source_url__icontains="obs.acibadem.edu.tr")
+        .annotate(distance=CosineDistance("embedding", primary_vector))
+        .order_by("distance")[:limit]
+    )
+    for ch in qs:
+        u = str(ch.source_url or "")
+        if is_rag_source_url_blocked(u):
+            continue
+        out[ch.pk] = float(ch.distance)
+    return out
+
+
 # STEM: de-prioritize generic portal / events (not /fees/ or "tuition" in URL — that hurt fee questions).
 _STEM_LOW_VALUE_PAGE_RE = re.compile(
     r"event|etkinlik|kariyer|career|duyur|announce|haber|news|kongre|congress|"
@@ -627,12 +647,42 @@ _CE_CURRICULUM_QUERY_RE = re.compile(
 # Entity-specific OBS program code hints.
 # These codes are stable enough to de-prioritize clearly wrong program links.
 # curUnit=14 Computer Engineering uses several curSunit shells (overview vs sections).
+# Live URLs look like: .../bologna/index.aspx?lang=en&curOp=showPac&curUnit=14&curSunit=6246
 _OBS_ENTITY_CODE_HINTS: dict[str, dict[str, set[str]]] = {
     "computer-engineering": {
         "curunit": {"14"},
         "cursunit": {"6246", "6247", "6248"},
     },
 }
+
+
+def _obs_entity_source_url_q(hints: dict[str, set[str]] | None) -> Q | None:
+    """
+    OR of URL substring filters for known OBS curUnit / curSunit params.
+    Matches index.aspx?...&curOp=showPac&curUnit=14&... style URLs.
+    """
+    if not hints:
+        return None
+    parts: list[Q] = []
+    for u in hints.get("curunit") or ():
+        su = str(u).strip()
+        if not su:
+            continue
+        parts.append(Q(source_url__icontains=f"curUnit={su}"))
+        parts.append(Q(source_url__icontains=f"curunit={su}"))
+    for s in hints.get("cursunit") or ():
+        ss = str(s).strip()
+        if not ss:
+            continue
+        parts.append(Q(source_url__icontains=f"curSunit={ss}"))
+        parts.append(Q(source_url__icontains=f"cursunit={ss}"))
+    if not parts:
+        return None
+    combined = parts[0]
+    for p in parts[1:]:
+        combined |= p
+    return combined
+
 
 _LOCATION_AUTH_HINT_RE = re.compile(
     r"contact|iletisim|iletişim|address|adres|transport|ula[şs][ıi]m|campus|konum|location",
@@ -761,21 +811,68 @@ def _obs_url_entity_match_state(url: str, intents: QueryIntents) -> bool | None:
     return _obs_url_matches_target_entity(url, intents)
 
 
-def _academic_obs_fallback_chunks(intents: QueryIntents, limit: int = 3) -> list[DocumentChunk]:
+def _academic_obs_fallback_chunks(
+    intents: QueryIntents, limit: int | None = None,
+) -> list[DocumentChunk]:
     """
     Last-resort OBS fallback for curriculum queries when ranking yields no usable context.
-    Prefers program-detail OBS URLs and entity-matching code hints.
+    When ``_OBS_ENTITY_CODE_HINTS`` has an entry for ``intents.target_entity``, narrows the
+    queryset with curUnit/curSunit URL filters (plus dynConPage bodies) instead of relying
+    on primary-key iteration order.
     """
     if not intents.academic_obs:
         return []
 
-    qs = (
-        DocumentChunk.objects.filter(source_url__icontains="obs.acibadem.edu.tr")
-        .filter(source_url__icontains="showPac")
-        .only("pk", "content", "page_title", "source_url")
-    )
+    lim = max(1, min(24, int(limit if limit is not None else RAG_ACADEMIC_OBS_FALLBACK_LIMIT)))
+
+    base_obs = Q(source_url__icontains="obs.acibadem.edu.tr")
+    # Programme shells use curOp=showPac on index.aspx; substring match covers both.
+    showpac_q = Q(source_url__icontains="showPac")
+    dyn_q = Q(source_url__icontains="dynConPage.aspx")
+
+    hints_dict: dict[str, set[str]] | None = None
+    if intents.target_entity:
+        hints_dict = _OBS_ENTITY_CODE_HINTS.get(intents.target_entity)
+    entity_q = _obs_entity_source_url_q(hints_dict)
+
+    candidates: list[DocumentChunk] = []
+    if entity_q is not None:
+        scoped = (
+            DocumentChunk.objects.filter(base_obs & (showpac_q | dyn_q) & entity_q)
+            .only("pk", "content", "page_title", "source_url")
+            .order_by("pk")[: max(lim * 12, 120)]
+        )
+        candidates = list(scoped)
+    if not candidates:
+        candidates = list(
+            DocumentChunk.objects.filter(base_obs & showpac_q)
+            .only("pk", "content", "page_title", "source_url")
+            .order_by("pk")[: max(lim * 12, 120)]
+        )
+
+    def _sort_key(ch: DocumentChunk) -> tuple[int, int, int]:
+        u = str(ch.source_url or "")
+        blob = f"{ch.page_title or ''}\n{ch.content or ''}\n{u}".lower()
+        ent_match = (
+            1
+            if intents.target_entity
+            and hints_dict
+            and _obs_url_matches_target_entity(u, intents)
+            else 0
+        )
+        alias_match = (
+            1
+            if intents.target_alias
+            and any(a and a.lower() in blob for a in intents.target_alias)
+            else 0
+        )
+        # Lower tuple sorts first: prefer entity URL match, then alias in body, stable pk.
+        return (-ent_match, -alias_match, ch.pk)
+
+    candidates.sort(key=_sort_key)
+
     out: list[DocumentChunk] = []
-    for ch in qs.iterator(chunk_size=200):
+    for ch in candidates:
         u = str(ch.source_url or "")
         if is_rag_source_url_blocked(u):
             continue
@@ -786,7 +883,7 @@ def _academic_obs_fallback_chunks(intents: QueryIntents, limit: int = 3) -> list
             if match_state is False and not has_alias:
                 continue
         out.append(ch)
-        if len(out) >= max(1, limit):
+        if len(out) >= lim:
             break
     return out
 
@@ -967,6 +1064,8 @@ def _vector_search_and_merge(
     vectors: list[list[float]],
     composed_query: str,
     raw_user_query: str | None,
+    *,
+    intents: QueryIntents | None = None,
 ) -> tuple[dict[int, float], list[tuple[DocumentChunk, float]], bool, int] | None:
     """
     Run cosine-distance vector search + BM25 hybrid, merge distances,
@@ -980,6 +1079,25 @@ def _vector_search_and_merge(
 
     t_vec = time.time()
     best = _merge_best_distances(vectors, per_pool)
+    if (
+        RAG_OBS_VECTOR_PREFILTER
+        and intents
+        and intents.academic_obs
+        and vectors
+        and vectors[0]
+    ):
+        obs_limit = min(per_pool, 64)
+        obs_rows = _merge_obs_host_vector_pool(vectors[0], obs_limit)
+        for pk, d in obs_rows.items():
+            prev = best.get(pk)
+            if prev is None or d < prev:
+                best[pk] = d
+        if obs_rows:
+            logger.info(
+                "RAG OBS vector prefilter: merged obs host rows=%d, pool cap=%d",
+                len(obs_rows),
+                obs_limit,
+            )
     logger.info("RAG vector search: %.2fs (pool=%d)", time.time() - t_vec, per_pool)
 
     # BM25 hybrid
@@ -2000,10 +2118,17 @@ def _assemble_context(
             if total >= max_context_chars:
                 break
 
-    # If strict filters emptied the context on curriculum queries, force a small
-    # OBS-only fallback to avoid generic-knowledge answers.
-    if not context_parts and intents.academic_obs:
-        for ch in _academic_obs_fallback_chunks(intents, limit=3):
+    # If strict filters yielded no programme-detail OBS evidence for curriculum queries,
+    # force a small OBS-only fallback to avoid generic / selector-only context.
+    #
+    # Rationale: OBS often serves multiple sections (Course Structure, Outcomes, etc.)
+    # under the same UI; vector search may first hit unitSelection/index shells.
+    have_obs_programme_detail = any(
+        _OBS_PROGRAM_DETAIL_RE.search(str(s.get("url") or ""))
+        for s in sources
+    )
+    if intents.academic_obs and (not context_parts or not have_obs_programme_detail):
+        for ch in _academic_obs_fallback_chunks(intents):
             u = str(ch.source_url or "")
             raw = str(ch.content or "")
             if not raw or not u:
@@ -2133,7 +2258,9 @@ def search_document_chunks(
         return "", [], False, False
 
     # Stage 2b: vector search + BM25 merge
-    retrieval = _vector_search_and_merge(vectors, composed_query, raw_user_query)
+    retrieval = _vector_search_and_merge(
+        vectors, composed_query, raw_user_query, intents=intents,
+    )
     if retrieval is None:
         return "", [], False, True
 

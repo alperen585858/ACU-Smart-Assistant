@@ -69,6 +69,24 @@ class Command(BaseCommand):
         )
 
         self.stdout.write("")
+        self.stdout.write(self.style.NOTICE("=== OBS / retrieval debugging ==="))
+        obs_pages = Page.objects.filter(source="obs.acibadem.edu.tr").count()
+        obs_chunks = DocumentChunk.objects.filter(
+            source_url__icontains="obs.acibadem.edu.tr"
+        ).count()
+        self.stdout.write(
+            f"OBS Bologna Page rows (source=obs.acibadem.edu.tr): {obs_pages}"
+        )
+        self.stdout.write(
+            f"DocumentChunk rows with OBS host in source_url: {obs_chunks}"
+        )
+        self.stdout.write(
+            "Chat API JSON includes a 'rag' object: chunks_used, sources, "
+            "rag_query_preview, relaxed_retrieval, embedding_ok. If shell counts differ "
+            "from what the UI sees, compare POSTGRES_* in this environment vs the API process."
+        )
+
+        self.stdout.write("")
         self.stdout.write(
             "If many pages are 'never hit' in rag_diagnose_coverage, check crawl scope "
             "and re-run scrape with --crawl --max-pages / --allow-non-english as needed, "

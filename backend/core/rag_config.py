@@ -34,6 +34,15 @@ RAG_WHOIS_EXTRA_EMBEDS = max(0, min(4, int(os.environ.get("RAG_WHOIS_EXTRA_EMBED
 # Added to effective cosine distance when sorting context (STEM queries); pushes news/events pages down.
 RAG_STEM_NOISE_URL_PENALTY = float(os.environ.get("RAG_STEM_NOISE_URL_PENALTY", "0.14"))
 
+# Academic OBS fallback (when strict context assembly yields no chunks): max chunks to inject.
+RAG_ACADEMIC_OBS_FALLBACK_LIMIT = max(
+    1, min(24, int(os.environ.get("RAG_ACADEMIC_OBS_FALLBACK_LIMIT", "5")))
+)
+
+# When true and query has academic OBS intent, merge top cosine hits from obs.acibadem.edu.tr only
+# into the global candidate pool (helps programme pages rank before main-site noise).
+RAG_OBS_VECTOR_PREFILTER = _env_bool("RAG_OBS_VECTOR_PREFILTER", "false")
+
 
 def rag_source_url_blocklist_substrings() -> tuple[str, ...]:
     """

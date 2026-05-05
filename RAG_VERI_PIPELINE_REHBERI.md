@@ -13,6 +13,7 @@ Bu rehber, `refresh_rag` sonrasi indeksin bos kalmamasini ve OBS-Bologna icerigi
 
 Kritik notlar:
 
+- Yerel `runserver` / `manage.py shell` ile Docker icindeki backend **ayni PostgreSQL**’i kullanmiyorsa, indeks sayimlari ile sohbet API’sindeki RAG (`rag.sources`, `chunks_used`) birbirini tutmaz. Teşhis icin `python manage.py rag_index_audit` ve API JSON’daki `rag` alanini birlikte kullanin.
 - `--keep-existing` verilmezse mevcut `Page` ve `DocumentChunk` satirlari temizlenir.
 - OBS adimi varsayilan olarak aciktir; sadece bilincli durumlarda `--without-obs` kullanin.
 - OBS scrape dili varsayilan `en` olarak korunur (`--obs-lang en`).

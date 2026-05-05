@@ -40,7 +40,7 @@ class Command(BaseCommand):
         parser.add_argument(
             "--obs-delay",
             type=float,
-            default=1.5,
+            default=0.5,
             help="Delay for OBS Bologna Selenium scraping.",
         )
         parser.add_argument(
@@ -54,6 +54,12 @@ class Command(BaseCommand):
             type=str,
             default="en",
             help="Target OBS language (default: en).",
+        )
+        parser.add_argument(
+            "--obs-fetch-workers",
+            type=int,
+            default=None,
+            help="Parallel Chrome instances for OBS scrape (passed to scrape_obs_bologna). Default: that command's default (3).",
         )
         parser.add_argument("--batch-size", type=int, default=16)
         parser.add_argument("--chunk-size", type=int, default=700)
@@ -111,6 +117,8 @@ class Command(BaseCommand):
             }
             if options["obs_max_programs"] is not None:
                 obs_args["max_programs"] = options["obs_max_programs"]
+            if options["obs_fetch_workers"] is not None:
+                obs_args["fetch_workers"] = options["obs_fetch_workers"]
             call_command("scrape_obs_bologna", **obs_args)
         else:
             self.stdout.write(

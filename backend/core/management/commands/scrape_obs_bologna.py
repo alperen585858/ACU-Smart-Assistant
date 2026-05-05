@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import queue
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from django.core.management.base import BaseCommand
@@ -28,8 +30,8 @@ class Command(BaseCommand):
         parser.add_argument(
             "--delay",
             type=float,
-            default=1.5,
-            help="Seconds to sleep after each navigation or JS-triggering click (default: 1.5).",
+            default=0.5,
+            help="Seconds to sleep after each navigation or JS-triggering click (default: 0.5).",
         )
         parser.add_argument(
             "--max-programs",
@@ -54,6 +56,24 @@ class Command(BaseCommand):
             default="en",
             help="Prefer this site language: drop index/section URLs with lang=tr when set to en (default: en).",
         )
+        parser.add_argument(
+            "--fetch-workers",
+            type=int,
+            default=3,
+            help=(
+                "Parallel Chrome instances for URL fetch after discovery (default: 3). "
+                "Use 1 for sequential (low RAM). Each worker needs one headless browser."
+            ),
+        )
+        parser.add_argument(
+            "--verbose",
+            action="store_true",
+            help=(
+                "Print discovery progress, Done summary, failures, and scraper WARNING logs. "
+                "Default is quiet: only Saved lines (and [dry-run] lines when using --dry-run). "
+                "(Short -v is reserved by Django for --verbosity.)"
+            ),
+        )
 
     def handle(self, *args, **options):
         style: Any = self.style
@@ -64,45 +84,69 @@ class Command(BaseCommand):
         max_programs: int | None = options["max_programs"]
         skip_raw: str = options["skip_section"] or ""
         skip_parts = [s.strip() for s in skip_raw.split(",") if s.strip()]
+        fetch_workers: int = max(1, min(8, int(options["fetch_workers"] or 1)))
+        target_lang: str = options.get("lang") or "en"
+        verbose: bool = bool(options.get("verbose"))
 
-        driver = None
+        log_levels_restored: list[tuple[logging.Logger, int]] = []
+        if not verbose:
+            for name in (
+                "core.obs_bologna_scraper",
+                "urllib3",
+                "urllib3.connectionpool",
+            ):
+                lg = logging.getLogger(name)
+                log_levels_restored.append((lg, lg.level))
+                lg.setLevel(logging.CRITICAL)
+
+        drivers_to_quit: list[Any] = []
         saved = 0
         failed = 0
         urls: list[str] = []
 
+        def _quit_all_drivers() -> None:
+            for d in drivers_to_quit:
+                try:
+                    d.quit()
+                except Exception as e:
+                    if verbose:
+                        logger.warning("driver.quit() failed: %s", e)
+                    else:
+                        logger.debug("driver.quit() failed: %s", e)
+
         try:
-            self.stdout.write("Starting headless Chrome…")
-            driver = build_driver()
+            if verbose:
+                self.stdout.write("Starting headless Chrome…")
+            collect_driver = build_driver()
+            drivers_to_quit.append(collect_driver)
             urls = collect_bologna_urls(
-                driver,
+                collect_driver,
                 delay,
                 skip_section_parts=skip_parts,
-                target_lang=(options.get("lang") or "en"),
+                target_lang=target_lang,
             )
-            self.stdout.write(style.NOTICE(f"Collected {len(urls)} unique URLs."))
+            if verbose:
+                self.stdout.write(
+                    style.NOTICE(
+                        f"Collected {len(urls)} unique URLs. "
+                        f"Fetching with {fetch_workers} worker(s) — "
+                        "showPac pages are slowest (sidebar + dynCon HTTP)."
+                    )
+                )
 
             if max_programs is not None:
                 cap = max(1, int(max_programs))
                 urls = urls[:cap]
-                self.stdout.write(style.WARNING(f"Capped to {cap} URLs (--max-programs)."))
+                if verbose:
+                    self.stdout.write(style.WARNING(f"Capped to {cap} URLs (--max-programs)."))
 
-            for url in urls:
-                try:
-                    title, text, embedding_units = fetch_page_extract(
-                        driver,
-                        url,
-                        delay,
-                        target_lang=(options.get("lang") or "en"),
-                    )
-                except Exception as exc:
-                    failed += 1
-                    logger.warning("Failed to fetch %s: %s", url, exc)
-                    self.stdout.write(style.WARNING(f"Failed: {url} ({exc})"))
-                    continue
-
+            def _save_one(url: str, title: str, text: str, embedding_units: list[str]) -> None:
+                nonlocal saved
                 if not text:
-                    self.stdout.write(style.WARNING(f"Empty body text: {url}"))
-
+                    if verbose:
+                        self.stdout.write(style.WARNING(f"Empty body text: {url}"))
+                    else:
+                        logger.debug("Empty body text: %s", url)
                 if dry_run:
                     self.stdout.write(
                         f"[dry-run] {url} | {title[:80]!r} | {len(text)} chars"
@@ -120,16 +164,84 @@ class Command(BaseCommand):
                     saved += 1
                     self.stdout.write(style.SUCCESS(f"Saved: {url}"))
 
-        finally:
-            if driver is not None:
-                try:
-                    driver.quit()
-                except Exception as e:
-                    logger.warning("driver.quit() failed: %s", e)
+            if fetch_workers == 1:
+                for url in urls:
+                    try:
+                        title, text, embedding_units = fetch_page_extract(
+                            collect_driver,
+                            url,
+                            delay,
+                            target_lang=target_lang,
+                        )
+                    except Exception as exc:
+                        failed += 1
+                        if verbose:
+                            logger.warning("Failed to fetch %s: %s", url, exc)
+                            self.stdout.write(style.WARNING(f"Failed: {url} ({exc})"))
+                        else:
+                            logger.debug("Failed to fetch %s: %s", url, exc)
+                        continue
+                    _save_one(url, title, text, embedding_units)
+            else:
+                pool: queue.Queue[Any] = queue.Queue()
+                pool.put(collect_driver)
+                extra = fetch_workers - 1
+                if verbose:
+                    self.stdout.write(
+                        style.NOTICE(
+                            f"Parallel fetch: {fetch_workers} Chrome instance(s) "
+                            f"({extra} extra after discovery driver)."
+                        )
+                    )
+                for _ in range(extra):
+                    d = build_driver()
+                    drivers_to_quit.append(d)
+                    pool.put(d)
 
-        self.stdout.write(
-            style.NOTICE(
-                f"Done. URLs processed={len(urls)}, "
-                f"saved={saved if not dry_run else 0}, failed={failed}, dry_run={dry_run}."
+                def _fetch_with_pooled_driver(
+                    page_url: str,
+                ) -> tuple[str, str, str, list[str]]:
+                    """Return (url, title, text, embedding_units) — no DB in this thread."""
+                    d = pool.get()
+                    try:
+                        title, text, units = fetch_page_extract(
+                            d,
+                            page_url,
+                            delay,
+                            target_lang=target_lang,
+                        )
+                        return page_url, title, text, units
+                    finally:
+                        pool.put(d)
+
+                fut_to_url: dict[Any, str] = {}
+                with ThreadPoolExecutor(max_workers=fetch_workers) as ex:
+                    for u in urls:
+                        fut = ex.submit(_fetch_with_pooled_driver, u)
+                        fut_to_url[fut] = u
+                    for fut in as_completed(fut_to_url):
+                        url = fut_to_url[fut]
+                        try:
+                            _, title, text, embedding_units = fut.result()
+                        except Exception as exc:
+                            failed += 1
+                            if verbose:
+                                logger.warning("Failed to fetch %s: %s", url, exc)
+                                self.stdout.write(style.WARNING(f"Failed: {url} ({exc})"))
+                            else:
+                                logger.debug("Failed to fetch %s: %s", url, exc)
+                            continue
+                        _save_one(url, title, text, embedding_units)
+
+        finally:
+            for lg, prev in log_levels_restored:
+                lg.setLevel(prev)
+            _quit_all_drivers()
+
+        if verbose:
+            self.stdout.write(
+                style.NOTICE(
+                    f"Done. URLs processed={len(urls)}, "
+                    f"saved={saved if not dry_run else 0}, failed={failed}, dry_run={dry_run}."
+                )
             )
-        )
