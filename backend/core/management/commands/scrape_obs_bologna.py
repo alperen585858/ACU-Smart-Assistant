@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from django.core.management.base import BaseCommand
+from django.db import transaction
 
 from core.models import Page
 from core.obs_bologna_scraper import (
@@ -74,6 +75,14 @@ class Command(BaseCommand):
                 "(Short -v is reserved by Django for --verbosity.)"
             ),
         )
+        parser.add_argument(
+            "--clear-existing",
+            action="store_true",
+            help=(
+                "Delete existing OBS Bologna Page rows (source=obs.acibadem.edu.tr) and their "
+                "chunks before scraping. ACU and other sources are unchanged."
+            ),
+        )
 
     def handle(self, *args, **options):
         style: Any = self.style
@@ -81,6 +90,7 @@ class Command(BaseCommand):
 
         delay: float = max(0.0, float(options["delay"]))
         dry_run: bool = options["dry_run"]
+        clear_existing: bool = bool(options.get("clear_existing"))
         max_programs: int | None = options["max_programs"]
         skip_raw: str = options["skip_section"] or ""
         skip_parts = [s.strip() for s in skip_raw.split(",") if s.strip()]
@@ -98,6 +108,25 @@ class Command(BaseCommand):
                 lg = logging.getLogger(name)
                 log_levels_restored.append((lg, lg.level))
                 lg.setLevel(logging.CRITICAL)
+
+        if clear_existing:
+            if dry_run:
+                self.stdout.write(
+                    style.WARNING(
+                        "[dry-run] Skipping --clear-existing (no database changes)."
+                    )
+                )
+            else:
+                with transaction.atomic():
+                    qs = Page.objects.filter(source=SOURCE_LABEL)
+                    n = qs.count()
+                    deleted, detail = qs.delete()
+                self.stdout.write(
+                    style.WARNING(
+                        f"Cleared OBS pages: {n} row(s) removed "
+                        f"(DocumentChunk cascade: {detail})."
+                    )
+                )
 
         drivers_to_quit: list[Any] = []
         saved = 0

@@ -1,4 +1,11 @@
-"""Selenium helpers for scraping OBS Bologna (obs.acibadem.edu.tr) pages."""
+"""Selenium helpers for scraping OBS Bologna (obs.acibadem.edu.tr) pages.
+
+Programme-specific pages (``progCourses.aspx``, ``progAbout.aspx``,
+``progGoalsObjectives.aspx``, …) are often shown only in the rendered page footer
+(POST/viewstate-heavy HTML), not in the main nav. A plain HTTP GET still returns
+the full document with those URL strings embedded; discovery uses regex over
+``page_source`` / HTML (see ``_urls_from_html_regex``), not Chrome DevTools network logs.
+"""
 from __future__ import annotations
 
 import logging
@@ -35,22 +42,8 @@ BOLOGNA_INDEX_URL = "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en
 SOURCE_LABEL = "obs.acibadem.edu.tr"
 OBS_HOST = "obs.acibadem.edu.tr"
 BOLOGNA_PATH_MARKER = "/oibs/bologna/"
-BOLOGNA_SEED_URLS = (
-    "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en&curOp=showPac&curUnit=16&curSunit=6288",
-    "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en&curOp=showPac&curUnit=16&curSunit=6289",
-    "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en&curOp=showPac&curUnit=14&curSunit=6247",
-    "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en&curOp=showPac&curUnit=14&curSunit=6246",
-    "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en&curOp=showPac&curUnit=14&curSunit=6248",
-    "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en&curOp=showPac&curUnit=05&curSunit=5",
-    "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en&curOp=showPac&curUnit=05&curSunit=3",
-    "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en&curOp=showPac&curUnit=05&curSunit=6108",
-    "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en&curOp=showPac&curUnit=05&curSunit=4",
-    "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en&curOp=showPac&curUnit=05&curSunit=6107",
-    "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en&curOp=showPac&curUnit=05&curSunit=2",
-    "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en&curOp=showPac&curUnit=16&curSunit=6287",
-    "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en&curOp=showPac&curUnit=12&curSunit=17",
-    "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en&curOp=showPac&curUnit=06&curSunit=1",
-)
+# Programme / showPac URLs are not hardcoded: discovery starts at BOLOGNA_INDEX_URL
+# and collects links from page_source regex, iframe walks, and menu/postback expanders.
 
 USER_AGENT = (
     "ACU-Smart-Assistant/0.1 (+university project; respectful crawl; contact: student)"
@@ -122,7 +115,19 @@ _SHOWPAC_SECTION_KEYWORDS: tuple[str, ...] = (
 )
 
 # Embedded content uses dynConPage.aspx; program details use showPac in the URL.
+# Programme tabs: prog*.aspx (e.g. progGoalsObjectives, progAbout, progCourses,
+# progLearnOutcomes, progTYYCMatrix, …). The Information Package lists a programme-
+# dependent subset and count (varies by department/curSunit); discovery does not
+# assume a fixed list—HTML regex + optional Bologna-wide *.aspx catch-all below.
 _DYNCON_RE = re.compile(r"dynConPage\.aspx\?[^\"'\\s<>]+", re.IGNORECASE)
+# Relative: progAbout.aspx?lang=en&curSunit=… (prog(?!ram) avoids matching ``program.aspx``.)
+_PROG_ASPX_REL_RE = re.compile(
+    r"prog(?!ram)[a-zA-Z][a-zA-Z0-9]*\.aspx\?[^\"'\\s<>]+", re.IGNORECASE
+)
+_PROG_ASPX_ABS_RE = re.compile(
+    r"https?://[^\s\"'<>]*prog(?!ram)[a-zA-Z][a-zA-Z0-9]*\.aspx[^\s\"'<>]*",
+    re.IGNORECASE,
+)
 _SHOWPAC_ABS_RE = re.compile(
     r"https?://[^\s\"'<>]+showpac[^\s\"'<>]*", re.IGNORECASE
 )
@@ -130,6 +135,16 @@ _SHOWPAC_ABS_RE = re.compile(
 _LOOSE_SHOWPAC_RE = re.compile(r"[^\s\"'<>]*showPac[^\s\"'<>]*", re.IGNORECASE)
 _UNITSEL_RE = re.compile(
     r"[^\s\"'<>]*unitSelection\.aspx[^\s\"'<>]*", re.IGNORECASE
+)
+# Fallback for OBS adding new *.aspx page types without code changes (footer/hidden links).
+# Scope: host + /oibs/bologna/ only; normalize_obs_url drops everything else.
+_BOLOGNA_ANY_ASPX_ABS_RE = re.compile(
+    r"https?://[^\s\"'<>]*obs\.acibadem\.edu\.tr/oibs/bologna/[a-zA-Z0-9._-]+\.aspx[^\s\"'<>]*",
+    re.IGNORECASE,
+)
+_BOLOGNA_ANY_ASPX_REL_RE = re.compile(
+    r"(?<![a-zA-Z0-9_])([a-zA-Z][a-zA-Z0-9_-]*\.aspx\?[^\"'\\s<>]+)",
+    re.IGNORECASE,
 )
 
 
@@ -340,9 +355,25 @@ def normalize_obs_url(href: str, base: str) -> str:
     if host != OBS_HOST:
         return ""
     path = (parsed.path or "").lower()
+    # Any /oibs/bologna/ resource (index, dynConPage, progCourses, unitSelection, …) is kept.
     if BOLOGNA_PATH_MARKER not in path and "showpac" not in url.lower():
         return ""
     return url
+
+
+def _is_prog_aspx_url(url: str) -> bool:
+    """True if path looks like programme detail pages (progCourses, progAbout, …)."""
+    p = urlparse(url or "").path or ""
+    return bool(re.search(r"prog(?!ram)[a-zA-Z][a-zA-Z0-9]*\.aspx", p, re.I))
+
+
+def _should_queue_bologna_section(url: str) -> bool:
+    """
+    Section crawl: any Bologna *.aspx may surface more links (footer, viewstate).
+    Bounded by OBS_SECTION_QUEUE_CAP.
+    """
+    p = (urlparse(url or "").path or "").lower()
+    return BOLOGNA_PATH_MARKER in p and ".aspx" in p
 
 
 def _preferred_lang(url: str, target_lang: str) -> bool:
@@ -369,6 +400,29 @@ def _urls_from_html_regex(html: str, base: str) -> tuple[set[str], set[str]]:
     bologna_base = f"https://{OBS_HOST}{BOLOGNA_PATH_MARKER}"
     for m in _DYNCON_RE.finditer(clean):
         path = m.group(0)
+        nu = normalize_obs_url(urljoin(bologna_base, path), base)
+        if nu:
+            other.add(nu)
+    for m in _PROG_ASPX_ABS_RE.finditer(clean):
+        nu = normalize_obs_url(m.group(0).strip(), base)
+        if nu:
+            other.add(nu)
+    for m in _PROG_ASPX_REL_RE.finditer(clean):
+        path = m.group(0)
+        nu = normalize_obs_url(urljoin(bologna_base, path), base)
+        if nu:
+            other.add(nu)
+    for m in _BOLOGNA_ANY_ASPX_ABS_RE.finditer(clean):
+        raw = m.group(0).strip()
+        if "/program.aspx" in raw.lower():
+            continue
+        nu = normalize_obs_url(raw, base)
+        if nu:
+            other.add(nu)
+    for m in _BOLOGNA_ANY_ASPX_REL_RE.finditer(clean):
+        path = m.group(1)
+        if path.lower().startswith("program."):
+            continue
         nu = normalize_obs_url(urljoin(bologna_base, path), base)
         if nu:
             other.add(nu)
@@ -859,9 +913,7 @@ def collect_bologna_urls(
     """
     skip_parts = list(skip_section_parts or [])
     base = BOLOGNA_INDEX_URL
-    all_showpac: set[str] = {
-        u for u in BOLOGNA_SEED_URLS if _preferred_lang(u, target_lang)
-    }
+    all_showpac: set[str] = set()
     all_other: set[str] = set()
     all_other.add(BOLOGNA_INDEX_URL)
 
@@ -871,8 +923,7 @@ def collect_bologna_urls(
         wait_for_page_ready(driver)
     except WebDriverException as e:
         logger.warning("Initial load failed: %s", e)
-        fallback = [u for u in BOLOGNA_SEED_URLS if _preferred_lang(u, target_lang)]
-        return [BOLOGNA_INDEX_URL, *fallback]
+        return [BOLOGNA_INDEX_URL]
 
     clicked_fingerprints: set[tuple[str, str, str]] = set()
 
@@ -914,10 +965,7 @@ def collect_bologna_urls(
         for u in ot:
             if u not in seen_section and _preferred_lang(u, target_lang):
                 all_other.add(u)
-                if u not in section_queue and (
-                    "dynconpage" in u.lower()
-                    or "unitselection" in u.lower()
-                ):
+                if u not in section_queue and _should_queue_bologna_section(u):
                     section_queue.append(u)
 
         spx, otx = _urls_from_html_regex(driver.page_source, driver.current_url or base)

@@ -338,6 +338,99 @@ class NormalizeObsUrlTests(unittest.TestCase):
         )
         self.assertNotIn("#", u)
 
+    def test_progcourses_absolute(self):
+        from core.obs_bologna_scraper import normalize_obs_url
+
+        base = "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en"
+        u = normalize_obs_url(
+            "https://obs.acibadem.edu.tr/oibs/bologna/progCourses.aspx?lang=en&curSunit=6246",
+            base,
+        )
+        self.assertTrue(u)
+        self.assertIn("progCourses", u)
+
+    def test_progcourses_relative_join(self):
+        from core.obs_bologna_scraper import normalize_obs_url
+
+        base = "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en"
+        u = normalize_obs_url("progCourses.aspx?lang=en&curSunit=1", base)
+        self.assertTrue(u)
+        self.assertIn("/oibs/bologna/", u)
+
+    def test_prog_goals_objectives_absolute(self):
+        from core.obs_bologna_scraper import normalize_obs_url
+
+        base = "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en"
+        u = normalize_obs_url(
+            "https://obs.acibadem.edu.tr/oibs/bologna/progGoalsObjectives.aspx?lang=en&curSunit=6166",
+            base,
+        )
+        self.assertTrue(u)
+        self.assertIn("progGoalsObjectives", u)
+
+
+class UrlsFromHtmlRegexProgAspxTests(unittest.TestCase):
+    """prog*.aspx (progCourses, progAbout, progGoalsObjectives, …) in JS/viewstate."""
+
+    def test_finds_relative_progcourses(self):
+        from core.obs_bologna_scraper import _urls_from_html_regex
+
+        base = "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en"
+        html = "<html><body>foo progCourses.aspx?lang=en&amp;curSunit=6246 bar</body></html>"
+        _sp, ot = _urls_from_html_regex(html, base)
+        self.assertTrue(any("progCourses" in u for u in ot))
+
+    def test_finds_relative_prog_about_and_goals(self):
+        from core.obs_bologna_scraper import _urls_from_html_regex
+
+        base = "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en"
+        html = (
+            "<html><body>"
+            "progAbout.aspx?lang=en&amp;curSunit=6166 "
+            "progGoalsObjectives.aspx?lang=en&amp;curSunit=6166"
+            "</body></html>"
+        )
+        _sp, ot = _urls_from_html_regex(html, base)
+        self.assertTrue(any("progAbout" in u for u in ot))
+        self.assertTrue(any("progGoalsObjectives" in u for u in ot))
+
+    def test_finds_absolute_progcourses(self):
+        from core.obs_bologna_scraper import _urls_from_html_regex
+
+        base = "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en"
+        html = (
+            "<html><body>"
+            "https://obs.acibadem.edu.tr/oibs/bologna/progCourses.aspx?lang=en&curSunit=99"
+            "</body></html>"
+        )
+        _sp, ot = _urls_from_html_regex(html, base)
+        self.assertTrue(any("progCourses" in u for u in ot))
+
+    def test_does_not_match_program_dot_aspx(self):
+        from core.obs_bologna_scraper import _urls_from_html_regex
+
+        base = "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en"
+        html = "<html><body>program.aspx?x=1</body></html>"
+        _sp, ot = _urls_from_html_regex(html, base)
+        self.assertFalse(any("program.aspx" in u for u in ot))
+
+    def test_unknown_bologna_aspx_name_caught_by_loose_pattern(self):
+        """Future OBS page types: any filename.aspx? under bologna without new regex."""
+        from core.obs_bologna_scraper import _urls_from_html_regex
+
+        base = "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en"
+        html = (
+            "<html><body>facNewPageType.aspx?lang=en&amp;curSunit=123"
+            " https://obs.acibadem.edu.tr/oibs/bologna/OtherTool.aspx?lang=en"
+            "</body></html>"
+        )
+        _sp, ot = _urls_from_html_regex(html, base)
+        self.assertTrue(
+            any("facNewPageType" in u for u in ot),
+            msg=f"expected facNewPageType in {ot!r}",
+        )
+        self.assertTrue(any("OtherTool" in u for u in ot))
+
 
 class TestRagQueryExpand(unittest.TestCase):
     """Asymmetric person-name query expansion (no Django)."""
