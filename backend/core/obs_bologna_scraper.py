@@ -1026,8 +1026,13 @@ def fetch_page_extract(
     retries: int = 1,
     *,
     target_lang: str = "en",
-) -> tuple[str, str, list[str]]:
-    """Navigate to url and return (title, text, embedding_units)."""
+) -> tuple[str, str, list[str], list[str]]:
+    """Navigate to url and return (title, text, embedding_units, followup_urls).
+
+    followup_urls: Bologna HTTP URLs seen in this page's HTML (e.g. progCourses.aspx
+    in a showPac footer). They are not in collect_bologna_urls() until this page loads;
+    scrape_obs_bologna runs a second pass to fetch them.
+    """
     last_exc: Exception | None = None
     for attempt in range(retries + 1):
         try:
@@ -1037,11 +1042,13 @@ def fetch_page_extract(
             wait_for_page_ready(driver, timeout=_page_ready_timeout_for_url(url))
             html = driver.page_source
             title, text, units = extract_title_text_and_embedding_units(html)
+            html_for_links = html
             # showPac pages are mostly a nav shell; dynConPage bodies carry programme text.
             # Use HTTP (not extra Selenium navigations) so Docker without Chrome still works.
             if "showpac" in (url or "").lower():
                 nav_html = _expand_showpac_sections_and_capture_html(driver, max(0.05, delay / 2))
                 html_for_dyncon = f"{html}\n\n{nav_html}" if nav_html else html
+                html_for_links = html_for_dyncon
                 extra = append_showpac_dyncon_via_http(
                     html_for_dyncon,
                     url,
@@ -1050,13 +1057,16 @@ def fetch_page_extract(
                 )
                 if extra:
                     text = f"{(text or '').strip()}\n\n{extra}".strip()
+            base_for_regex = driver.current_url or url
+            sp_links, ot_links = _urls_from_html_regex(html_for_links, base_for_regex)
+            followups = sorted({u for u in (sp_links | ot_links) if u})
             if not title:
                 title = url[:500]
-            return title, text, units
+            return title, text, units, followups
         except WebDriverException as e:
             last_exc = e
             logger.warning("fetch_page_extract attempt %s failed for %s: %s", attempt, url, e)
             time.sleep(delay)
     if last_exc:
         logger.warning("Giving up on %s: %s", url, last_exc)
-    return url[:500], "", []
+    return url[:500], "", [], []

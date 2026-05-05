@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import os
 import queue
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
@@ -193,10 +195,50 @@ class Command(BaseCommand):
                     saved += 1
                     self.stdout.write(style.SUCCESS(f"Saved: {url}"))
 
+            def _env_second_pass_cap() -> int:
+                raw = (os.environ.get("OBS_SECOND_PASS_MAX") or "").strip()
+                if raw.isdigit():
+                    return max(10, min(800, int(raw)))
+                return 400
+
+            def _second_pass_notice(extra: set[str], first: set[str]) -> list[str]:
+                cap = _env_second_pass_cap()
+                cand = sorted(extra - first)[:cap]
+                if verbose and cand:
+                    self.stdout.write(
+                        style.NOTICE(
+                            f"Second pass: fetching {len(cand)} URL(s) found in page HTML "
+                            f"(e.g. prog*.aspx)— not in initial discovery list."
+                        )
+                    )
+                return cand
+
+            first_round = set(urls)
+            discovered: set[str] = set()
+            disc_lock = threading.Lock()
+
             if fetch_workers == 1:
                 for url in urls:
                     try:
-                        title, text, embedding_units = fetch_page_extract(
+                        title, text, embedding_units, follows = fetch_page_extract(
+                            collect_driver,
+                            url,
+                            delay,
+                            target_lang=target_lang,
+                        )
+                        discovered.update(follows)
+                    except Exception as exc:
+                        failed += 1
+                        if verbose:
+                            logger.warning("Failed to fetch %s: %s", url, exc)
+                            self.stdout.write(style.WARNING(f"Failed: {url} ({exc})"))
+                        else:
+                            logger.debug("Failed to fetch %s: %s", url, exc)
+                        continue
+                    _save_one(url, title, text, embedding_units)
+                for url in _second_pass_notice(discovered, first_round):
+                    try:
+                        title, text, embedding_units, _f = fetch_page_extract(
                             collect_driver,
                             url,
                             delay,
@@ -205,10 +247,12 @@ class Command(BaseCommand):
                     except Exception as exc:
                         failed += 1
                         if verbose:
-                            logger.warning("Failed to fetch %s: %s", url, exc)
-                            self.stdout.write(style.WARNING(f"Failed: {url} ({exc})"))
+                            logger.warning("Failed 2nd pass %s: %s", url, exc)
+                            self.stdout.write(
+                                style.WARNING(f"Failed (2nd pass): {url} ({exc})")
+                            )
                         else:
-                            logger.debug("Failed to fetch %s: %s", url, exc)
+                            logger.debug("Failed 2nd pass %s: %s", url, exc)
                         continue
                     _save_one(url, title, text, embedding_units)
             else:
@@ -229,17 +273,17 @@ class Command(BaseCommand):
 
                 def _fetch_with_pooled_driver(
                     page_url: str,
-                ) -> tuple[str, str, str, list[str]]:
-                    """Return (url, title, text, embedding_units) — no DB in this thread."""
+                ) -> tuple[str, str, str, list[str], list[str]]:
+                    """Return (url, title, text, embedding_units, followups) — no DB in thread."""
                     d = pool.get()
                     try:
-                        title, text, units = fetch_page_extract(
+                        title, text, units, follows = fetch_page_extract(
                             d,
                             page_url,
                             delay,
                             target_lang=target_lang,
                         )
-                        return page_url, title, text, units
+                        return page_url, title, text, units, follows
                     finally:
                         pool.put(d)
 
@@ -251,7 +295,7 @@ class Command(BaseCommand):
                     for fut in as_completed(fut_to_url):
                         url = fut_to_url[fut]
                         try:
-                            _, title, text, embedding_units = fut.result()
+                            _, title, text, embedding_units, follows = fut.result()
                         except Exception as exc:
                             failed += 1
                             if verbose:
@@ -260,7 +304,29 @@ class Command(BaseCommand):
                             else:
                                 logger.debug("Failed to fetch %s: %s", url, exc)
                             continue
+                        with disc_lock:
+                            discovered.update(follows)
                         _save_one(url, title, text, embedding_units)
+
+                for url in _second_pass_notice(discovered, first_round):
+                    try:
+                        title, text, embedding_units, _f = fetch_page_extract(
+                            collect_driver,
+                            url,
+                            delay,
+                            target_lang=target_lang,
+                        )
+                    except Exception as exc:
+                        failed += 1
+                        if verbose:
+                            logger.warning("Failed 2nd pass %s: %s", url, exc)
+                            self.stdout.write(
+                                style.WARNING(f"Failed (2nd pass): {url} ({exc})")
+                            )
+                        else:
+                            logger.debug("Failed 2nd pass %s: %s", url, exc)
+                        continue
+                    _save_one(url, title, text, embedding_units)
 
         finally:
             for lg, prev in log_levels_restored:
