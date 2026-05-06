@@ -18,12 +18,61 @@ from core.rag_keywords import (
     international_application_requirements_page_intent,
     international_student_apply_intent,
 )
-from core.rag_retrieval import _CE_CURRICULUM_QUERY_RE, search_document_chunks
+from core.rag_retrieval import (
+    _CE_CURRICULUM_QUERY_RE,
+    infer_curriculum_semester_number,
+    search_document_chunks,
+)
 
 from .message_utils import trim_message_for_llm
 
 RAG_USER_BUBBLE_MAX_CHARS = max(2000, int(os.environ.get("RAG_USER_BUBBLE_MAX_CHARS", "14000")))
 RAG_META_REASON_SKIPPED_SMALLTALK = "skipped_smalltalk_no_rag"
+
+
+def _direct_ects_payload_from_context(
+    context: str,
+    user_plain: str,
+    sources: list[dict],
+) -> dict[str, str] | None:
+    """
+    Deterministic shortcut for ECTS-of-course questions.
+    Uses the explicit '[EXTRACTED: Course row for ECTS]' block produced by retrieval.
+    """
+    if "ects" not in (user_plain or "").lower():
+        return None
+    m_course = re.search(r"Course anchor:\s*(.+)", context or "", re.IGNORECASE)
+    m_ects = re.search(r"ECTS value:\s*([0-9]{1,2}|NOT FOUND IN EXCERPT)", context or "", re.IGNORECASE)
+    if not m_course or not m_ects:
+        return None
+    course = (m_course.group(1) or "").strip(" .")
+    ects_raw = (m_ects.group(1) or "").strip()
+    if not course:
+        return None
+    out = {
+        "direct_ects_course": course,
+        "direct_ects_value": ects_raw,
+        "direct_ects_status": "ok" if ects_raw.upper() != "NOT FOUND IN EXCERPT" else "not_found",
+        "direct_ects_row": "",
+        "direct_ects_source_url": "",
+    }
+    m_row = re.search(r"Unit row \(if available\):\s*(.+)", context or "", re.IGNORECASE)
+    if m_row:
+        out["direct_ects_row"] = (m_row.group(1) or "").strip()[:500]
+    src_hint = ""
+    for s in sources or []:
+        u = str((s or {}).get("url") or "")
+        if "progcourses.aspx" in u.lower():
+            out["direct_ects_source_url"] = u
+            src_hint = " (from the course plan row)"
+            break
+    out["direct_ects_reply"] = (
+        f"I couldn't see a reliable ECTS value for {course} in the retrieved excerpt. "
+        "Please share the exact row or refresh the crawl data."
+        if out["direct_ects_status"] != "ok"
+        else f"{course} has {ects_raw} ECTS{src_hint}."
+    )
+    return out
 
 SYSTEM_BASE = (
     "You are the official website assistant for Acıbadem Mehmet Ali Aydınlar University (ACU). "
@@ -118,7 +167,20 @@ SYSTEM_RAG_USER_WRAPPER = (
     "“presence of relationship”) as degree courses unless the same line clearly includes a departmental course code. "
     "Bologna may mirror the same degree under different internal tab IDs—unless the prose explicitly compares tracks, "
     "describe one programme. When both generic mission text and a course list appear, the course list answers "
-    "“what is taught”."
+    "“what is taught”. "
+    "(15b) Many Bologna progCourses tables stitch **engineering programme rows** together with optional **campus-wide** "
+    "electives coded by OTHER departments (examples: PSY-, HUM-, SOC-, LAW-). If the question names a concrete degree "
+    "such as Computer Engineering and a semester, prioritise compulsory and core engineering-coded rows "
+    "(e.g. CSE, MAT, MEG, PHY, EEE) that appear under that semester. Do NOT lead with unrelated-faculty electives or "
+    "treat Psychology / humanities electives as the main CE curriculum unless the user explicitly asked for elective "
+    "options from the whole catalogue; you may add one short clause (“optional elective slots may pull from catalogue rows …”) "
+    "or omit those rows entirely when they are clearly outside the CE core block. "
+    "(15c) If user asks ECTS/credit for a specific course (e.g. “ECTS of Web Programming”), match the exact course-name row "
+    "in the table and report ECTS from that SAME row only. Never borrow a number from another row/semester. "
+    "ECTS is the single numeric value in the ECTS column (e.g. 5, 6) — do NOT confuse it with T+A+L workload formats like "
+    "“3+0+0”. If the Context includes an [EXTRACTED: Course row for ECTS] block, treat its 'ECTS value' line as the "
+    "authoritative value (unless it says NOT FOUND IN EXCERPT). If exact course row or its ECTS cell is not visible in "
+    "excerpts, say that briefly instead of guessing."
 )
 
 SYSTEM_SMALLTALK = (
@@ -430,6 +492,11 @@ def prepare_chat_prompts(rag_query: str, user_plain: str) -> tuple[str, str, dic
         "sources": sources,
         "rag_query_preview": rag_query[:400],
     }
+    direct_ects_payload = _direct_ects_payload_from_context(context, user_plain, sources)
+    if direct_ects_payload:
+        meta.update(direct_ects_payload)
+        if str(direct_ects_payload.get("direct_ects_status") or "") == "ok":
+            meta["direct_reply"] = str(direct_ects_payload.get("direct_ects_reply") or "").strip()
     if not emb_ok and not context:
         system = (
             f"{SYSTEM_BASE}\n\nThe question could not be embedded (model error). "
@@ -490,6 +557,27 @@ def prepare_chat_prompts(rag_query: str, user_plain: str) -> tuple[str, str, dic
                 "unless they appear on the same table row as a real course code. You may exceed the usual 2–6 sentence "
                 "cap when listing many legitimate courses."
             )
+            sem_n = infer_curriculum_semester_number(f"{user_plain}\n{rag_query}")
+            if sem_n is not None:
+                system += (
+                    f"\n\nSEMESTER {sem_n}: The user narrowed to this semester — list ONLY courses that appear in the excerpts "
+                    f"under that semester’s heading or in the same contiguous table block for semester {sem_n} "
+                    f'(e.g. “{sem_n}. Semester”, “{sem_n}th semester”). Do NOT lump electives from other semesters or '
+                    "invent programme-wide elective menus unless those exact course rows sit under that semester in Context. "
+                    "If excerpts do not clearly separate that semester, say so briefly and cite only grounded rows."
+                )
+            if RAG_STEM_OR_ENGINEERING_INTENT_RE.search(
+                user_plain
+            ) or RAG_STEM_OR_ENGINEERING_INTENT_RE.search(rag_query):
+                system += (
+                    "\n\nENGINEERING vs CATALOGUE ELECTIVES: The user asked about an engineering/programme curriculum. "
+                    "Bologna tables often embed **campus-wide optional electives** (e.g. codes starting PSY-, HUM-, SOC-) "
+                    "next to compulsory engineering modules. For this answer—unless they explicitly asked for the full elective "
+                    "catalogue—**do not headline or emphasise unrelated-faculty electives** such as Psychology; keep the focus "
+                    "on compulsory and core CE/engineering-aligned codes (typically CSE, MEG, MAT, PHY, EEE…) that belong to "
+                    "the named programme for the requested semester. One optional trailing sentence acknowledging elective slots "
+                    "is enough; omit PSY-heavy lists."
+                )
         if RAG_FACULTY_ROSTER_INTENT_RE.search(user_plain) and "faculty listing" in (
             context or ""
         ):
