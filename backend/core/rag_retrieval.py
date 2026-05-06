@@ -24,6 +24,9 @@ from core.rag_config import (
     RAG_BM25_HYBRID,
     RAG_CROSS_ENCODER_RERANK,
     RAG_CROSS_ENCODER_WEIGHT,
+    RAG_CURRICULUM_CONTEXT_MAX_CHARS,
+    RAG_CURRICULUM_MERGED_SNIPPET_CHARS,
+    RAG_CURRICULUM_SNIPPET_CHARS,
     RAG_KEYWORD_BOOST,
     RAG_LEXICAL_WEIGHT,
     RAG_MAX_CHARS,
@@ -640,9 +643,383 @@ _OBS_PROGRAM_DETAIL_RE = re.compile(
 )
 
 _CE_CURRICULUM_QUERY_RE = re.compile(
-    r"\blessons?\b|\bcourses?\b|curriculum|modules?|\bects\b|syllabus|müfredat|ders",
+    r"\blessons?\b|\bcourses?\b|curriculum|modules?|\bects\b|syllabus|müfredat|ders|"
+    r"\bsemester\b|\bdönem\b|\bdonem\b",
     re.IGNORECASE,
 )
+# User explicitly compares shells or names curSunit — do not pin context to one programme tab.
+_CE_CURRICULUM_MULTISHELL_QUERY_RE = re.compile(
+    r"\b(6166|6246|6247|6248|cur\s*sunit|cursunit|compare|comparison|vs\.?|versus|"
+    r"difference|fark|ikisi|her\s+iki|both\s+tracks?|two\s+programmes?|iki\s+program)\b",
+    re.IGNORECASE,
+)
+_FIRST_YEAR_CURRICULUM_RE = re.compile(
+    r"first\s*-?\s*year|freshman|\b1st\s+year\b|year\s*1\b|birinci\s+sınıf|1\.\s*sınıf",
+    re.IGNORECASE,
+)
+
+_SEMESTER_ORDINAL_WORDS: tuple[tuple[str, int], ...] = (
+    ("first", 1),
+    ("second", 2),
+    ("third", 3),
+    ("fourth", 4),
+    ("fifth", 5),
+    ("sixth", 6),
+    ("seventh", 7),
+    ("eighth", 8),
+)
+
+
+def _ascii_fold_tr(s: str) -> str:
+    t = (s or "").lower()
+    for a, b in (
+        ("ı", "i"),
+        ("ğ", "g"),
+        ("ü", "u"),
+        ("ş", "s"),
+        ("ö", "o"),
+        ("ç", "c"),
+        ("â", "a"),
+        ("î", "i"),
+    ):
+        t = t.replace(a, b)
+    return t
+
+
+def infer_curriculum_semester_number(blob: str) -> int | None:
+    """
+    Detect a 1–8 semester focus from the user / composed query (English or Turkish).
+
+    Used to center OBS progCourses snippets on the right table block and to steer the LLM.
+    """
+    low = _ascii_fold_tr(blob or "")
+    # Normalize punctuation variants like "4..Semester", "4-semester", "semester:4".
+    low = re.sub(r"[._:/\\-]+", " ", low)
+    low = re.sub(r"\s+", " ", low).strip()
+    if not low.strip():
+        return None
+    for pat, n in (
+        (r"birinci\s+donem|1\.\s*donem", 1),
+        (r"ikinci\s+donem|2\.\s*donem", 2),
+        (r"ucuncu\s+donem|3\.\s*donem", 3),
+        (r"dorduncu\s+donem|dordunci\s+donem|4\.\s*donem", 4),
+        (r"besinci\s+donem|5\.\s*donem", 5),
+        (r"altinci\s+donem|6\.\s*donem", 6),
+        (r"yedinci\s+donem|7\.\s*donem", 7),
+        (r"sekizinci\s+donem|8\.\s*donem", 8),
+    ):
+        if re.search(pat, low, re.IGNORECASE):
+            return n
+    for word, n in _SEMESTER_ORDINAL_WORDS:
+        if re.search(rf"\b{re.escape(word)}\s+semester\b", low):
+            return n
+    m = re.search(r"\b(\d{1,2})\s*(?:st|nd|rd|th)?\s*semester\b", low)
+    if m:
+        v = int(m.group(1))
+        return v if 1 <= v <= 8 else None
+    m = re.search(r"\bsemester\s*(\d{1,2})\b", low)
+    if m:
+        v = int(m.group(1))
+        return v if 1 <= v <= 8 else None
+    m = re.search(r"\b(\d{1,2})\s*semester\b", low)
+    if m:
+        v = int(m.group(1))
+        return v if 1 <= v <= 8 else None
+    return None
+
+
+def _semester_table_anchor_variants(n: int) -> tuple[str, ...]:
+    if n < 1 or n > 8:
+        return ()
+    suff = {1: "1st", 2: "2nd", 3: "3rd"}.get(n, f"{n}th")
+    return (
+        f"{n}.semester course plan",
+        f"{n}. semester course plan",
+        f"{n}.semester",
+        f"{n} semester",
+        f"{suff} semester",
+        f"semester {n}",
+    )
+
+
+def _curriculum_prog_table_snippet_needles(curric_blob: str) -> tuple[str, ...]:
+    """Ordered anchors for progCourses / matrix snippet windows (try first match wins)."""
+    generic = (
+        "course code",
+        "compulsory courses",
+        "course matrix",
+        "semester course plan",
+    )
+    sem = infer_curriculum_semester_number(curric_blob)
+    head: list[str] = []
+    if sem is not None:
+        head.extend(_semester_table_anchor_variants(sem))
+    elif _FIRST_YEAR_CURRICULUM_RE.search(curric_blob):
+        head.extend(
+            ("1.semester course plan", "1.semester", "first year", "year 1"),
+        )
+    tail = (
+        "1.semester course plan",
+        "2.semester course plan",
+        "3.semester course plan",
+        "4.semester course plan",
+        "5.semester course plan",
+        "6.semester course plan",
+        "7.semester course plan",
+        "8.semester course plan",
+    )
+    seen: set[str] = set()
+    out: list[str] = []
+    for block in (head, generic, tail):
+        for x in block:
+            if x not in seen:
+                seen.add(x)
+                out.append(x)
+    return tuple(out)
+
+
+def infer_ects_course_anchor(blob: str) -> str | None:
+    """
+    Extract course-name anchor for questions like:
+    - "what is ects of Web Programming"
+    - "Web Programming ects"
+    """
+    low = _ascii_fold_tr(blob or "")
+    if "ects" not in low:
+        return None
+    txt = re.sub(r"\s+", " ", (blob or "")).strip()
+    if not txt:
+        return None
+    txt = re.sub(r"[|,;]+", " ", txt).strip()
+
+    def _clean_cand(c: str) -> str:
+        s = re.sub(r"\s+", " ", (c or "").strip(" .,:;!?-"))
+        if not s:
+            return ""
+        stop_phrases = (
+            " course plan",
+            " semester",
+            " and ",
+            " what is ",
+            " ects",
+            " total ects",
+            " acibadem",
+            " university",
+            " (acu)",
+        )
+        slow = f" {s.lower()} "
+        # Truncate at the first stop phrase occurrence.
+        cut = len(s)
+        for ph in stop_phrases:
+            idx = slow.find(ph)
+            if idx > 0:
+                cut = min(cut, idx - 1)
+        s = s[:cut].strip(" .,:;!?-")
+        # Keep 1-4 words (course names), avoid noisy full-question tails.
+        toks = [t for t in s.split() if t]
+        stop_tokens = {"acibadem", "university", "acu"}
+        cut_idx = None
+        for i, tok in enumerate(toks):
+            if _ascii_fold_tr(tok) in stop_tokens:
+                cut_idx = i
+                break
+        if cut_idx is not None:
+            toks = toks[:cut_idx]
+        if len(toks) > 4:
+            toks = toks[:4]
+        return " ".join(toks).strip()
+
+    patterns = (
+        r"\bects\s+of\s+([A-Za-z][A-Za-z0-9&+/\- ]{2,80})",
+        r"\bfor\s+([A-Za-z][A-Za-z0-9&+/\- ]{2,80})\s*\??\s*$",
+        r"\b([A-Za-z][A-Za-z0-9&+/\- ]{2,80})\s+ects\b",
+    )
+    stop = {"course", "courses", "semester", "plan", "computer engineering"}
+    for pat in patterns:
+        m = re.search(pat, txt, re.IGNORECASE)
+        if not m:
+            continue
+        cand = _clean_cand(m.group(1) or "")
+        if len(cand) < 3:
+            continue
+        if _ascii_fold_tr(cand) in stop:
+            continue
+        return cand
+    return None
+
+
+def extract_ects_value_near_anchor(text: str, anchor: str) -> tuple[str, str | None]:
+    """
+    Return (row_excerpt, ects_value_str_or_none) from a table-like text blob.
+    We keep this conservative: if we can't see a number tied to ECTS in the same window,
+    we return None for the value rather than guessing.
+    """
+    t = text or ""
+    a = (anchor or "").strip()
+    if not t or len(a) < 3:
+        return "", None
+    # Window around first occurrence (case-insensitive).
+    low = t.lower()
+    alow = a.lower()
+    i = low.find(alow)
+    if i < 0:
+        # try a looser token match (longest token)
+        toks = sorted([x for x in a.split() if len(x) >= 4], key=len, reverse=True)
+        for tok in toks[:2]:
+            j = low.find(tok.lower())
+            if j >= 0:
+                i = j
+                break
+    if i < 0:
+        return t[:900], None
+    start = max(0, i - 900)
+    end = min(len(t), i + 1800)
+    excerpt = t[start:end]
+    ex_low = excerpt.lower()
+
+    # Prefer extracting from the same "row" as the anchor to avoid confusing T+A+L (e.g. 3+0+0)
+    # with the ECTS column (typically a single integer like 5, 6).
+    lines = [ln.strip() for ln in excerpt.splitlines() if ln.strip()]
+    row_idx = None
+    for idx, ln in enumerate(lines):
+        if alow in ln.lower():
+            row_idx = idx
+            break
+    row_span = " ".join(lines[row_idx : min(len(lines), row_idx + 3)]) if row_idx is not None else excerpt
+
+    def _single_number_after_ects(s: str) -> str | None:
+        # Ignore T+A+L like 3+0+0
+        if re.search(r"\d+\s*\+\s*\d+\s*\+\s*\d+", s):
+            pass
+        m = re.search(r"\bects\b[^0-9]{0,12}(\d{1,2})(?!\s*\+)\b", s, re.IGNORECASE)
+        return m.group(1) if m else None
+
+    def _single_number_before_ects(s: str) -> str | None:
+        m = re.search(r"\b(\d{1,2})(?!\s*\+)\b[^a-z0-9]{0,12}\bects\b", s, re.IGNORECASE)
+        return m.group(1) if m else None
+
+    # 1) Look for explicit ECTS label near the row.
+    val = _single_number_after_ects(row_span) or _single_number_before_ects(row_span)
+    if val:
+        return excerpt, val
+
+    # 2) If the flattened table is "row: ... ECTS <n>", this catches it.
+    m = re.search(
+        rf"{re.escape(anchor)}[\s\S]{{0,260}}?\bects\b[^0-9]{{0,20}}(\d{{1,2}})(?!\s*\+)\b",
+        excerpt,
+        re.IGNORECASE,
+    )
+    if m:
+        return excerpt, m.group(1)
+
+    # 3) Fallback: any local ECTS-number pattern in the window.
+    if "ects" in ex_low:
+        for pat in (
+            r"\bects\b[^0-9]{0,20}(\d{1,2})(?!\s*\+)\b",
+            r"\b(\d{1,2})(?!\s*\+)\b[^a-z0-9]{0,20}\bects\b",
+        ):
+            m2 = re.search(pat, excerpt, re.IGNORECASE)
+            if m2:
+                return excerpt, m2.group(1)
+
+    return excerpt, None
+
+
+def _extract_ects_from_flat_row_text(row: str) -> str | None:
+    """
+    Extract ECTS from a single flattened table-row string.
+
+    OBS extraction sometimes omits the literal 'ECTS' header token; in that case
+    rows often look like:
+      'CSE 220 Web Programming 3+0+0 Compulsory 6 Face to Face'
+    We MUST not confuse T+A+L (3+0+0) with the ECTS integer.
+    """
+    r = (row or "").strip()
+    if not r:
+        return None
+    # Remove workload triple to avoid capturing 3/0/0
+    r2 = re.sub(r"\b\d+\s*\+\s*\d+\s*\+\s*\d+\b", " ", r)
+    r2 = re.sub(r"\s+", " ", r2).strip()
+
+    m = re.search(r"\b(compulsory|elective)\b\s+(\d{1,2})\b", r2, re.IGNORECASE)
+    if m:
+        return m.group(2)
+
+    # Fallback heuristic: pick the last 1–2 digit number (common ECTS placement near end),
+    # excluding obvious course-code hundreds (e.g. 220) if present.
+    nums = [int(x) for x in re.findall(r"\b(\d{1,2})\b", r2)]
+    if nums:
+        return str(nums[-1])
+    return None
+
+
+def extract_ects_from_merged_course_text(text: str, anchor: str) -> tuple[str, str | None]:
+    """
+    Extract ECTS from merged progCourses text without relying on DB schema extras.
+
+    Returns (row_like_excerpt, ects_value_or_none).
+    """
+    t = text or ""
+    a = (anchor or "").strip()
+    if not t or len(a) < 3:
+        return "", None
+    lines = [ln.strip() for ln in t.splitlines() if ln.strip()]
+    alow = a.lower()
+    a_tokens = [x for x in re.findall(r"[a-z]{3,}", _ascii_fold_tr(a)) if x not in {"for", "of", "and"}]
+
+    def _anchor_line_match(ln: str) -> bool:
+        l = _ascii_fold_tr(ln or "")
+        if alow in l:
+            return True
+        if not a_tokens:
+            return False
+        hit = sum(1 for tok in a_tokens if tok in l)
+        need = 2 if len(a_tokens) >= 2 else 1
+        return hit >= need
+
+    for idx, ln in enumerate(lines):
+        if not _anchor_line_match(ln):
+            continue
+        # Use only row-local context (max +1 wrapped line), never wide windows that can
+        # pick semester total ECTS (30/36).
+        cands = [ln]
+        if idx + 1 < len(lines):
+            cands.append(f"{ln} {lines[idx + 1]}")
+        val = None
+        best_row = ""
+        for row in cands:
+            if "total ects" in row.lower():
+                continue
+            v = _extract_ects_from_flat_row_text(row)
+            if v is None:
+                continue
+            # Must look like a real course row: has workload + status.
+            if not re.search(r"\b\d+\+\d+\+\d+\b", row):
+                continue
+            if not re.search(r"\b(compulsory|elective)\b", row, re.IGNORECASE):
+                continue
+            val = v
+            best_row = row
+            break
+        if val:
+            return best_row, val
+    # Fallback on flattened single-line bodies: anchor ... 3+0+0 ... Compulsory 6 ...
+    toks = [re.escape(x) for x in a.split() if len(x) >= 2]
+    if toks:
+        anchor_pat = r"\s+".join(toks)
+        pat = re.compile(
+            rf"({anchor_pat}[\s\S]{{0,140}}?\b\d+\+\d+\+\d+\b[\s\S]{{0,60}}?\b"
+            rf"(?:Compulsory|Elective)\b[\s:|]{{0,8}}([0-9]{{1,2}}))",
+            re.IGNORECASE,
+        )
+        m = pat.search(t)
+        if m:
+            row = (m.group(1) or "").strip()
+            if "total ects" not in row.lower():
+                return row[:500], m.group(2)
+    # No strict row hit => do not guess.
+    return "", None
+
 
 # Entity-specific OBS program code hints.
 # These codes are stable enough to de-prioritize clearly wrong program links.
@@ -651,7 +1028,8 @@ _CE_CURRICULUM_QUERY_RE = re.compile(
 _OBS_ENTITY_CODE_HINTS: dict[str, dict[str, set[str]]] = {
     "computer-engineering": {
         "curunit": {"14"},
-        "cursunit": {"6246", "6247", "6248"},
+        # Programme shells observed on Bologna index/showPac + progCourses (not only 6246 family).
+        "cursunit": {"6246", "6247", "6248", "6166"},
     },
 }
 
@@ -682,6 +1060,68 @@ def _obs_entity_source_url_q(hints: dict[str, set[str]] | None) -> Q | None:
     for p in parts[1:]:
         combined |= p
     return combined
+
+
+def _obs_url_cursunit_value(url: str) -> str | None:
+    parsed = urlparse(str(url or ""))
+    q = parse_qs(parsed.query or "")
+    v = (q.get("curSunit") or q.get("cursunit") or [""])[0].strip()
+    return v or None
+
+
+def _merged_obs_bologna_course_tabs_text(source_url: str, *, cap: int = 400_000) -> str:
+    """
+    Rejoin all embedding shards for one Bologna course-list URL.
+
+    ``build_page_embeddings`` splits pages into ~700-character chunks, so a single
+    ``DocumentChunk`` rarely contains the full semester table—only a merged view
+    lists enough courses for the LLM.
+    """
+    u = (source_url or "").strip()
+    if not u:
+        return ""
+    parts = (
+        DocumentChunk.objects.filter(source_url=u)
+        .order_by("chunk_index", "pk")
+        .values_list("content", flat=True)
+    )
+    out: list[str] = []
+    n = 0
+    for p in parts:
+        s = (p or "").strip()
+        if s:
+            out.append(s)
+            n += len(s) + 1
+            if n >= cap:
+                break
+    return "\n".join(out)[:cap]
+
+
+def _page_course_tab_text(source_url: str, *, cap: int = 400_000) -> str:
+    """
+    Prefer full Page.content for progCourses/progCourseMatrix extraction.
+    Falls back to coarse URL matching by stem + curSunit when exact URL is absent.
+    """
+    u = (source_url or "").strip()
+    if not u:
+        return ""
+    p = Page.objects.filter(url=u).only("content").first()
+    if p and (p.content or "").strip():
+        return str(p.content)[:cap]
+    parsed = urlparse(u)
+    q = parse_qs(parsed.query or "")
+    sunit = (q.get("curSunit") or q.get("cursunit") or [""])[0].strip()
+    stem = parsed.path.rsplit("/", 1)[-1].lower()
+    if stem and sunit:
+        alt = (
+            Page.objects.filter(url__icontains=stem)
+            .filter(url__icontains=f"curSunit={sunit}")
+            .only("content")
+            .first()
+        )
+        if alt and (alt.content or "").strip():
+            return str(alt.content)[:cap]
+    return ""
 
 
 _LOCATION_AUTH_HINT_RE = re.compile(
@@ -757,10 +1197,26 @@ def _obs_entity_code_adjustment(url: str, intents: QueryIntents) -> float:
     curunit = (q.get("curUnit") or q.get("curunit") or [""])[0].strip()
     cursunit = (q.get("curSunit") or q.get("cursunit") or [""])[0].strip()
 
-    score = 0.0
     unit_hints = hints.get("curunit") or set()
     sunit_hints = hints.get("cursunit") or set()
 
+    ulow = (url or "").lower()
+    curriculum_q = bool(_CE_CURRICULUM_QUERY_RE.search(intents.q_blob))
+    # curSunit whitelist is incomplete (many valid programme shells per department).
+    # Do not strongly demote the actual course-list pages for "wrong" curSunit.
+    if curriculum_q and (
+        "progcourses.aspx" in ulow or "progcoursematrix.aspx" in ulow
+    ):
+        score = 0.0
+        if curunit and curunit in unit_hints:
+            score -= 0.14
+        if cursunit and cursunit in sunit_hints:
+            score -= 0.12
+        else:
+            score -= 0.08
+        return score
+
+    score = 0.0
     if curunit:
         score += -0.20 if curunit in unit_hints else 0.50
     if cursunit:
@@ -850,9 +1306,47 @@ def _academic_obs_fallback_chunks(
             .order_by("pk")[: max(lim * 12, 120)]
         )
 
-    def _sort_key(ch: DocumentChunk) -> tuple[int, int, int]:
+    # Course-list pages use many curSunit values; entity_q often omits them from the shell query.
+    seen_pk: set[int] = {c.pk for c in candidates}
+    curric = bool(_CE_CURRICULUM_QUERY_RE.search(intents.q_blob))
+    if curric and intents.target_entity:
+        palias = Q()
+        for a in intents.target_alias or ():
+            t = (a or "").strip()
+            if len(t) >= 6:
+                palias |= Q(content__icontains=t) | Q(page_title__icontains=t)
+        extras_base = DocumentChunk.objects.filter(
+            base_obs,
+            Q(source_url__icontains="progCourses.aspx")
+            | Q(source_url__icontains="progCourseMatrix.aspx"),
+        )
+        if palias and entity_q is not None:
+            extras_qs = extras_base.filter(palias | entity_q)
+        elif palias:
+            extras_qs = extras_base.filter(palias)
+        elif entity_q is not None:
+            extras_qs = extras_base.filter(entity_q)
+        else:
+            extras_qs = None
+        if extras_qs is not None:
+            for ch in (
+                extras_qs.only("pk", "content", "page_title", "source_url")
+                .order_by("pk")[:120]
+            ):
+                if ch.pk not in seen_pk:
+                    seen_pk.add(ch.pk)
+                    candidates.append(ch)
+
+    def _sort_key(ch: DocumentChunk) -> tuple[int, int, int, int]:
         u = str(ch.source_url or "")
         blob = f"{ch.page_title or ''}\n{ch.content or ''}\n{u}".lower()
+        ulo = u.lower()
+        course_tab = (
+            1
+            if curric
+            and ("progcourses.aspx" in ulo or "progcoursematrix.aspx" in ulo)
+            else 0
+        )
         ent_match = (
             1
             if intents.target_entity
@@ -866,8 +1360,8 @@ def _academic_obs_fallback_chunks(
             and any(a and a.lower() in blob for a in intents.target_alias)
             else 0
         )
-        # Lower tuple sorts first: prefer entity URL match, then alias in body, stable pk.
-        return (-ent_match, -alias_match, ch.pk)
+        # Prefer course-list tabs for curriculum fallback, then entity URL, alias, pk.
+        return (-course_tab, -ent_match, -alias_match, ch.pk)
 
     candidates.sort(key=_sort_key)
 
@@ -1347,14 +1841,23 @@ def _effective_sort_distance(
             # For entity-specific curriculum questions, penalize program-detail URLs
             # that still do not mention the requested target (e.g. wrong curUnit/curSunit).
             if intents.target_alias:
+                uchk = str(ch.source_url or "").lower()
+                course_list_obs = (
+                    "progcourses.aspx" in uchk or "progcoursematrix.aspx" in uchk
+                )
                 obs_target_blob = (
                     f"{ch.source_url or ''}\n{ch.page_title or ''}\n{ch.content or ''}"
                 ).lower()
+                curric_q = bool(_CE_CURRICULUM_QUERY_RE.search(intents.q_blob))
                 if not any(
                     a and a.lower() in obs_target_blob for a in intents.target_alias
                 ):
                     match_state = _obs_url_entity_match_state(str(ch.source_url or ""), intents)
-                    if match_state is False:
+                    # Course tables often omit repeated "computer engineering"; curSunit
+                    # whitelist is incomplete — do not crush progCourses chunks here.
+                    if match_state is False and not (
+                        course_list_obs and curric_q
+                    ):
                         d += 0.24
         elif "information package" in obs_blob:
             d += 0.08
@@ -1373,6 +1876,18 @@ def _effective_sort_distance(
         ulow = (ch.source_url or "").lower()
         if "cursunit=6247" in ulow:
             d -= 0.09
+    if (
+        intents.academic_obs
+        and _CE_CURRICULUM_QUERY_RE.search(intents.q_blob)
+        and "progcourses.aspx" in str(ch.source_url or "").lower()
+    ):
+        d -= 0.22
+    if (
+        intents.academic_obs
+        and _CE_CURRICULUM_QUERY_RE.search(intents.q_blob)
+        and "progcoursematrix.aspx" in str(ch.source_url or "").lower()
+    ):
+        d -= 0.16
     if intents.intl_ug_only and _GRADUATE_INTL_SOURCE_HINT.search(
         f"{ch.source_url or ''} {ch.page_title or ''}"
     ):
@@ -1509,6 +2024,49 @@ def _keyword_boost_and_sort(
                 have_pk.add(ch.pk)
         if fr_pre:
             ranked = fr_pre + ranked
+
+    # Bologna course-list pages: vector search prefers prose tabs; force pool presence.
+    if (
+        has_rows
+        and intents.academic_obs
+        and (intents.target_alias or intents.target_entity)
+        and _CE_CURRICULUM_QUERY_RE.search(intents.q_blob)
+    ):
+        palias = Q()
+        for a in intents.target_alias or ():
+            t = (a or "").strip()
+            if len(t) >= 6:
+                palias |= Q(content__icontains=t) | Q(page_title__icontains=t)
+        hints_dict: dict[str, set[str]] | None = None
+        if intents.target_entity:
+            hints_dict = _OBS_ENTITY_CODE_HINTS.get(intents.target_entity)
+        entity_url_q = _obs_entity_source_url_q(hints_dict)
+        have_pk = {c.pk for c, _ in ranked}
+        cc_pre: list[tuple[DocumentChunk, float]] = []
+        base_course = DocumentChunk.objects.filter(
+            source_url__icontains="obs.acibadem.edu.tr",
+        ).filter(
+            Q(source_url__icontains="progCourses.aspx")
+            | Q(source_url__icontains="progCourseMatrix.aspx")
+        )
+        if palias and entity_url_q is not None:
+            course_qs = base_course.filter(palias | entity_url_q)
+        elif palias:
+            course_qs = base_course.filter(palias)
+        elif entity_url_q is not None:
+            course_qs = base_course.filter(entity_url_q)
+        else:
+            course_qs = base_course.none()
+        for ch in (
+            course_qs.only("pk", "content", "page_title", "source_url").order_by("pk")[
+                :32
+            ]
+        ):
+            if ch.pk not in have_pk:
+                cc_pre.append((ch, 0.05))
+                have_pk.add(ch.pk)
+        if cc_pre:
+            ranked = cc_pre + ranked
 
     # Real cosine distances for accurate metadata
     primary_vec = vectors[0]
@@ -1907,6 +2465,62 @@ def _fetch_intent_page_blocks(
     )
 
 
+def _prioritized_obs_prog_courses_chunks(
+    intents: QueryIntents,
+    *,
+    limit: int = 24,
+) -> list[DocumentChunk]:
+    """
+    progCourses.aspx chunks for OBS curriculum intents.
+
+    Listed before the generic ranked iteration so RAG_MAX_CHARS is not exhausted
+    by Bologna prose tabs (goals / degree / about) leaving no room for the course table.
+    """
+    if not intents.academic_obs:
+        return []
+    if not _CE_CURRICULUM_QUERY_RE.search(intents.q_blob):
+        return []
+    if not (intents.target_alias or intents.target_entity):
+        return []
+    palias = Q()
+    for a in intents.target_alias or ():
+        t = (a or "").strip()
+        if len(t) >= 6:
+            palias |= Q(content__icontains=t) | Q(page_title__icontains=t)
+    hints_dict = (
+        _OBS_ENTITY_CODE_HINTS.get(intents.target_entity)
+        if intents.target_entity
+        else None
+    )
+    entity_url_q = _obs_entity_source_url_q(hints_dict)
+    base = DocumentChunk.objects.filter(
+        Q(source_url__icontains="obs.acibadem.edu.tr")
+        & Q(source_url__icontains="progCourses.aspx"),
+    )
+    if palias and entity_url_q is not None:
+        course_qs = base.filter(palias | entity_url_q)
+    elif palias:
+        course_qs = base.filter(palias)
+    elif entity_url_q is not None:
+        course_qs = base.filter(entity_url_q)
+    else:
+        return []
+    rows = list(
+        course_qs.only("pk", "content", "page_title", "source_url").order_by("pk")[
+            :limit
+        ]
+    )
+
+    def _cursunit_sort_key(ch: DocumentChunk) -> tuple[int, int]:
+        su = _obs_url_cursunit_value(str(ch.source_url or ""))
+        if su and su.isdigit():
+            return (0, int(su))
+        return (1, ch.pk)
+
+    rows.sort(key=_cursunit_sort_key)
+    return rows
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Stage 6 — Context assembly
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1985,6 +2599,59 @@ def _assemble_context(
     total = 0
     url_counts: dict[str, int] = {}
     seen_chunk_ids: set[int] = set()
+    curric_blob = f"{composed_query or ''} {raw_user_query or ''}".strip()
+    ects_course_anchor = infer_ects_course_anchor(raw_user_query or "")
+    if not ects_course_anchor:
+        ects_course_anchor = infer_ects_course_anchor(curric_blob)
+    if intents.academic_obs and _CE_CURRICULUM_QUERY_RE.search(curric_blob):
+        max_context_chars = max(max_context_chars, RAG_CURRICULUM_CONTEXT_MAX_CHARS)
+    pinned_active = (
+        intents.academic_obs
+        and _CE_CURRICULUM_QUERY_RE.search(curric_blob)
+        and not _CE_CURRICULUM_MULTISHELL_QUERY_RE.search(curric_blob)
+    )
+    curriculum_pin_holder: dict[str, str | None] = {"cursunit": None}
+    merged_course_tab_cache: dict[str, str] = {}
+    seen_merged_course_tab_urls: set[str] = set()
+
+    def _cached_merged_course_tab(course_u: str) -> str:
+        if course_u not in merged_course_tab_cache:
+            merged_course_tab_cache[course_u] = _merged_obs_bologna_course_tabs_text(
+                course_u
+            )
+        return merged_course_tab_cache[course_u]
+
+    # For "ECTS of <Course>" queries: inject a deterministic excerpt first so the LLM
+    # doesn't guess a number from another row.
+    if ects_course_anchor and intents.academic_obs:
+        u_guess = ""
+        for ch in _prioritized_obs_prog_courses_chunks(intents, limit=8):
+            if ch.source_url and "progcourses.aspx" in str(ch.source_url).lower():
+                u_guess = str(ch.source_url)
+                break
+        if u_guess:
+            merged = _page_course_tab_text(u_guess)
+            if not merged:
+                merged = _cached_merged_course_tab(u_guess)
+            if merged:
+                unit_row, ects_u = extract_ects_from_merged_course_text(
+                    merged, ects_course_anchor,
+                )
+                ex, ects_val = extract_ects_value_near_anchor(merged, ects_course_anchor)
+                # Strict row parser is authoritative; heuristic window value is diagnostic only.
+                ects_best = ects_u
+                head = (
+                    "[EXTRACTED: Course row for ECTS]\n"
+                    f"Course anchor: {ects_course_anchor}\n"
+                    f"ECTS value: {ects_best or 'NOT FOUND IN EXCERPT'}\n"
+                    f"Unit row (if available): {unit_row or 'N/A'}\n"
+                    f"Heuristic ECTS candidate (debug): {ects_val or 'N/A'}\n"
+                    "Row excerpt (verify from this):\n"
+                    f"{ex[:1800]}\n"
+                )
+                if total + len(head) <= max_context_chars:
+                    context_parts.append(head)
+                    total += len(head)
 
     def try_add(ch: DocumentChunk, nominal_dist: float) -> None:
         nonlocal total
@@ -1996,6 +2663,24 @@ def _assemble_context(
         if cid in seen_chunk_ids:
             return
         u = str(ch.source_url or "")
+        if pinned_active and _OBS_PROGRAM_DETAIL_RE.search(u):
+            su = _obs_url_cursunit_value(u)
+            ulo = u.lower()
+            pc = curriculum_pin_holder["cursunit"]
+            is_pcourses = "progcourses.aspx" in ulo
+            is_pmatrix = "progcoursematrix.aspx" in ulo
+            if is_pcourses:
+                if su and pc is None:
+                    curriculum_pin_holder["cursunit"] = su
+                elif su and pc is not None and su != pc:
+                    return
+            elif is_pmatrix:
+                if su and pc is not None and su != pc:
+                    return
+                if su and pc is None:
+                    curriculum_pin_holder["cursunit"] = su
+            elif pc is not None and su and su != pc:
+                return
         if is_rag_source_url_blocked(u):
             return
         if blocks.inject_skip_url and u == blocks.inject_skip_url:
@@ -2008,14 +2693,31 @@ def _assemble_context(
             f"{u} {ch.page_title or ''}"
         ):
             return
+        merge_course_url = (
+            intents.academic_obs
+            and _CE_CURRICULUM_QUERY_RE.search(curric_blob)
+            and (
+                "progcourses.aspx" in u.lower()
+                or "progcoursematrix.aspx" in u.lower()
+            )
+        )
         max_per_url = RAG_MAX_CHUNKS_PER_URL + (
             1 if intents.scholarship else 0
         )
         if url_counts.get(u, 0) >= max_per_url:
             return
         raw = str(ch.content or "")
+        merged_course_body = (
+            _cached_merged_course_tab(u) if merge_course_url else ""
+        )
+        merge_use_full_tab = merge_course_url and len(
+            (merged_course_body or "").strip(),
+        ) >= 500
+        if merge_use_full_tab and u in seen_merged_course_tab_urls:
+            return
+        text_for_entity = merged_course_body if merge_use_full_tab else raw
         if intents.target_alias:
-            blob = f"{ch.page_title or ''}\n{raw}\n{u}"
+            blob = f"{ch.page_title or ''}\n{text_for_entity}\n{u}"
             pos, neg = _entity_alignment_score(
                 blob, intents.target_alias, intents.competitor_alias,
             )
@@ -2024,7 +2726,7 @@ def _assemble_context(
         # Curriculum/course intent: keep context grounded on OBS program pages.
         # For known entities (e.g. computer-engineering), prefer matching curUnit/curSunit.
         if intents.academic_obs and intents.target_alias:
-            blob = f"{ch.page_title or ''}\n{raw}\n{u}".lower()
+            blob = f"{ch.page_title or ''}\n{text_for_entity}\n{u}".lower()
             has_target_alias = any(
                 a and a.lower() in blob for a in intents.target_alias
             )
@@ -2072,6 +2774,43 @@ def _assemble_context(
                 if ph.lower() in low:
                     snippet = snippet_around_phrase(raw, ph, RAG_SNIPPET_CHARS)
                     break
+        elif merge_use_full_tab:
+            src = merged_course_body
+            snip_cap = min(
+                RAG_CURRICULUM_MERGED_SNIPPET_CHARS,
+                max(500, max_context_chars - total - 100),
+            )
+            snippet = src[:snip_cap]
+            low = src.lower()
+            if ects_course_anchor and ects_course_anchor.lower() in low:
+                snippet = snippet_around_phrase(src, ects_course_anchor, snip_cap)
+            elif "ects" in curric_blob.lower() and "course code" in low:
+                snippet = snippet_around_phrase(src, "course code", snip_cap)
+            else:
+                for needle in _curriculum_prog_table_snippet_needles(curric_blob):
+                    if needle in low:
+                        pos = low.index(needle)
+                        anchor = src[pos : pos + max(len(needle), 6)]
+                        snippet = snippet_around_phrase(src, anchor, snip_cap)
+                        break
+        elif merge_course_url:
+            snip_cap = min(
+                RAG_CURRICULUM_SNIPPET_CHARS,
+                max(500, max_context_chars - total - 100),
+            )
+            snippet = raw[:snip_cap]
+            low = raw.lower()
+            if ects_course_anchor and ects_course_anchor.lower() in low:
+                snippet = snippet_around_phrase(raw, ects_course_anchor, snip_cap)
+            elif "ects" in curric_blob.lower() and "course code" in low:
+                snippet = snippet_around_phrase(raw, "course code", snip_cap)
+            else:
+                for needle in _curriculum_prog_table_snippet_needles(curric_blob):
+                    if needle in low:
+                        pos = low.index(needle)
+                        anchor = raw[pos : pos + max(len(needle), 6)]
+                        snippet = snippet_around_phrase(raw, anchor, snip_cap)
+                        break
         else:
             snippet = raw[:RAG_SNIPPET_CHARS]
         if total + len(snippet) > max_context_chars:
@@ -2081,6 +2820,8 @@ def _assemble_context(
         total += len(snippet)
         url_counts[u] = url_counts.get(u, 0) + 1
         seen_chunk_ids.add(cid)
+        if merge_use_full_tab:
+            seen_merged_course_tab_urls.add(u)
         display_d = real_dist.get(cid, nominal_dist)
         sources.append(
             {
@@ -2089,6 +2830,12 @@ def _assemble_context(
                 "cosine_distance": round(float(display_d), 4),
             }
         )
+
+    if intents.academic_obs and _CE_CURRICULUM_QUERY_RE.search(curric_blob):
+        for ch in _prioritized_obs_prog_courses_chunks(intents):
+            try_add(ch, 0.04)
+            if total >= max_context_chars:
+                break
 
     # Fill from ranked chunks
     for chunk, dist_val in ranked:
@@ -2128,8 +2875,13 @@ def _assemble_context(
         for s in sources
     )
     if intents.academic_obs and (not context_parts or not have_obs_programme_detail):
+        pin_cu = curriculum_pin_holder.get("cursunit") if pinned_active else None
         for ch in _academic_obs_fallback_chunks(intents):
             u = str(ch.source_url or "")
+            if pin_cu and _OBS_PROGRAM_DETAIL_RE.search(u):
+                su = _obs_url_cursunit_value(u)
+                if su and su != pin_cu:
+                    continue
             raw = str(ch.content or "")
             if not raw or not u:
                 continue

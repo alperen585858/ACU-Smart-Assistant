@@ -1,14 +1,23 @@
-"""Selenium helpers for scraping OBS Bologna (obs.acibadem.edu.tr) pages."""
+"""Selenium helpers for scraping OBS Bologna (obs.acibadem.edu.tr) pages.
+
+Programme-specific pages (``progCourses.aspx``, ``progAbout.aspx``,
+``progGoalsObjectives.aspx``, …) are often shown only in the rendered page footer
+(POST/viewstate-heavy HTML), not in the main nav. Regex over ``page_source`` can miss them
+when the DOM is partial (timeouts); for each loaded showPac shell we therefore also synthesize
+canonical ``prog*.aspx`` URLs from ``curSunit`` (see ``synthetic_prog_followups_from_showpac_url``)
+so the management command second pass still fetches them.
+"""
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 import os
 import re
 import shutil
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from urllib.parse import parse_qs, urldefrag, urljoin, urlparse
+from urllib.parse import parse_qs, urldefrag, urlencode, urljoin, urlparse
 
 import requests
 from requests import exceptions as req_exc
@@ -35,22 +44,8 @@ BOLOGNA_INDEX_URL = "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en
 SOURCE_LABEL = "obs.acibadem.edu.tr"
 OBS_HOST = "obs.acibadem.edu.tr"
 BOLOGNA_PATH_MARKER = "/oibs/bologna/"
-BOLOGNA_SEED_URLS = (
-    "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en&curOp=showPac&curUnit=16&curSunit=6288",
-    "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en&curOp=showPac&curUnit=16&curSunit=6289",
-    "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en&curOp=showPac&curUnit=14&curSunit=6247",
-    "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en&curOp=showPac&curUnit=14&curSunit=6246",
-    "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en&curOp=showPac&curUnit=14&curSunit=6248",
-    "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en&curOp=showPac&curUnit=05&curSunit=5",
-    "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en&curOp=showPac&curUnit=05&curSunit=3",
-    "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en&curOp=showPac&curUnit=05&curSunit=6108",
-    "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en&curOp=showPac&curUnit=05&curSunit=4",
-    "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en&curOp=showPac&curUnit=05&curSunit=6107",
-    "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en&curOp=showPac&curUnit=05&curSunit=2",
-    "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en&curOp=showPac&curUnit=16&curSunit=6287",
-    "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en&curOp=showPac&curUnit=12&curSunit=17",
-    "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en&curOp=showPac&curUnit=06&curSunit=1",
-)
+# Programme / showPac URLs are not hardcoded: discovery starts at BOLOGNA_INDEX_URL
+# and collects links from page_source regex, iframe walks, and menu/postback expanders.
 
 USER_AGENT = (
     "ACU-Smart-Assistant/0.1 (+university project; respectful crawl; contact: student)"
@@ -60,7 +55,6 @@ MAX_EXPAND_PASSES = 8
 MAX_POSTBACK_CLICKS_PER_PASS = 50
 MAX_MENU_CLOSE_CLICKS = 36
 # showPac pages: only click a small set of left-rail "Information Package" links (not full-site __doPostBack).
-_MAX_SHOWPAC_SIDEBAR_CLICKS = 12
 _SHOWPAC_NAV_READY_TIMEOUT = 4.0
 _SHOWPAC_NAV_CLICK_SLEEP = 0.22
 PAGE_READY_TIMEOUT = 10
@@ -100,6 +94,11 @@ def _showpac_dyncon_settings() -> tuple[int, int, float]:
     tout = _env_bounded_float("OBS_DYNCON_HTTP_TIMEOUT", 24.0, 10.0, 55.0)
     return md, workers, tout
 
+
+def _showpac_sidebar_click_cap() -> int:
+    """Max Information Package sidebar clicks on showPac (``OBS_SHOWPAC_SIDEBAR_CLICKS``, 4–12)."""
+    return _env_bounded_int("OBS_SHOWPAC_SIDEBAR_CLICKS", 12, 4, 12)
+
 # English labels commonly used on OBS showPac left navigation (substring match).
 _SHOWPAC_SECTION_KEYWORDS: tuple[str, ...] = (
     "course structure",
@@ -122,7 +121,19 @@ _SHOWPAC_SECTION_KEYWORDS: tuple[str, ...] = (
 )
 
 # Embedded content uses dynConPage.aspx; program details use showPac in the URL.
+# Programme tabs: prog*.aspx (e.g. progGoalsObjectives, progAbout, progCourses,
+# progLearnOutcomes, progTYYCMatrix, …). The Information Package lists a programme-
+# dependent subset and count (varies by department/curSunit); discovery does not
+# assume a fixed list—HTML regex + optional Bologna-wide *.aspx catch-all below.
 _DYNCON_RE = re.compile(r"dynConPage\.aspx\?[^\"'\\s<>]+", re.IGNORECASE)
+# Relative: progAbout.aspx?lang=en&curSunit=… (prog(?!ram) avoids matching ``program.aspx``.)
+_PROG_ASPX_REL_RE = re.compile(
+    r"prog(?!ram)[a-zA-Z][a-zA-Z0-9]*\.aspx\?[^\"'\\s<>]+", re.IGNORECASE
+)
+_PROG_ASPX_ABS_RE = re.compile(
+    r"https?://[^\s\"'<>]*prog(?!ram)[a-zA-Z][a-zA-Z0-9]*\.aspx[^\s\"'<>]*",
+    re.IGNORECASE,
+)
 _SHOWPAC_ABS_RE = re.compile(
     r"https?://[^\s\"'<>]+showpac[^\s\"'<>]*", re.IGNORECASE
 )
@@ -130,6 +141,16 @@ _SHOWPAC_ABS_RE = re.compile(
 _LOOSE_SHOWPAC_RE = re.compile(r"[^\s\"'<>]*showPac[^\s\"'<>]*", re.IGNORECASE)
 _UNITSEL_RE = re.compile(
     r"[^\s\"'<>]*unitSelection\.aspx[^\s\"'<>]*", re.IGNORECASE
+)
+# Fallback for OBS adding new *.aspx page types without code changes (footer/hidden links).
+# Scope: host + /oibs/bologna/ only; normalize_obs_url drops everything else.
+_BOLOGNA_ANY_ASPX_ABS_RE = re.compile(
+    r"https?://[^\s\"'<>]*obs\.acibadem\.edu\.tr/oibs/bologna/[a-zA-Z0-9._-]+\.aspx[^\s\"'<>]*",
+    re.IGNORECASE,
+)
+_BOLOGNA_ANY_ASPX_REL_RE = re.compile(
+    r"(?<![a-zA-Z0-9_])([a-zA-Z][a-zA-Z0-9_-]*\.aspx\?[^\"'\\s<>]+)",
+    re.IGNORECASE,
 )
 
 
@@ -190,7 +211,8 @@ def append_showpac_dyncon_via_http(
     showPac shell pages mostly list nav labels; real programme text lives on dynConPage.
     Fetch those detail pages over HTTP and return appended plain text blocks.
     Parallelism: OBS_DYNCON_HTTP_WORKERS (default 4). Caps: OBS_SHOWPAC_MAX_DYNCON,
-    OBS_DYNCON_HTTP_TIMEOUT (per request, seconds).
+    OBS_DYNCON_HTTP_TIMEOUT (per request). Sidebar expansion (HTML discovery for dynCon
+    links) uses OBS_SHOWPAC_SIDEBAR_CLICKS (see ``_expand_showpac_sections_and_capture_html``).
     """
     if "showpac" not in (base_url or "").lower():
         return ""
@@ -340,9 +362,25 @@ def normalize_obs_url(href: str, base: str) -> str:
     if host != OBS_HOST:
         return ""
     path = (parsed.path or "").lower()
+    # Any /oibs/bologna/ resource (index, dynConPage, progCourses, unitSelection, …) is kept.
     if BOLOGNA_PATH_MARKER not in path and "showpac" not in url.lower():
         return ""
     return url
+
+
+def _is_prog_aspx_url(url: str) -> bool:
+    """True if path looks like programme detail pages (progCourses, progAbout, …)."""
+    p = urlparse(url or "").path or ""
+    return bool(re.search(r"prog(?!ram)[a-zA-Z][a-zA-Z0-9]*\.aspx", p, re.I))
+
+
+def _should_queue_bologna_section(url: str) -> bool:
+    """
+    Section crawl: any Bologna *.aspx may surface more links (footer, viewstate).
+    Bounded by OBS_SECTION_QUEUE_CAP.
+    """
+    p = (urlparse(url or "").path or "").lower()
+    return BOLOGNA_PATH_MARKER in p and ".aspx" in p
 
 
 def _preferred_lang(url: str, target_lang: str) -> bool:
@@ -353,6 +391,62 @@ def _preferred_lang(url: str, target_lang: str) -> bool:
     if "lang" in q and q["lang"] == ["tr"]:
         return False
     return True
+
+
+# Programme tabs for a given ``curSunit`` — HTML regex/postback-heavy pages often omit some.
+_SHOWPAC_PROG_TAB_STEMS: tuple[str, ...] = (
+    "progAbout",
+    "progGoalsObjectives",
+    "progProfile",
+    "progOfficials",
+    "progDegree",
+    "progAdmissionReq",
+    "progAccessFurtherStudies",
+    "progAccessFurhterStudies",  # legacy typo occasionally seen on OBS
+    "progGraduationReq",
+    "progRecogPriorLearning",
+    "progQualifyReqReg",
+    "progOccupationalProf",
+    "progLearnOutcomes",
+    "progCourses",
+    "progCourseMatrix",
+    "progTYYCMatrix",
+    "progAcademicStaff",
+    "progContact",
+)
+
+
+def synthetic_prog_followups_from_showpac_url(
+    showpac_url: str, target_lang: str = "en"
+) -> list[str]:
+    """Build canonical ``prog*.aspx?lang=&curSunit=`` URLs from a showPac ``index.aspx`` URL.
+
+    Ensures programme tabs enter second-pass scraping even when ``page_source`` lacks
+    those strings (partial DOM timeouts, minimized footers).
+    """
+    if "showpac" not in (showpac_url or "").lower():
+        return []
+    pq = urlparse(showpac_url)
+    scheme = pq.scheme or "https"
+    host = pq.hostname or OBS_HOST
+    qs = parse_qs(pq.query, keep_blank_values=True)
+    raw_id = ""
+    for k, vals in qs.items():
+        if k.lower() == "cursunit" and vals and str(vals[0]).strip():
+            raw_id = str(vals[0]).strip()
+            break
+    if not raw_id or not raw_id.isdigit():
+        return []
+    lang = (target_lang or "en").strip().lower() or "en"
+    bologna_prefix = urljoin(f"{scheme}://{host}", BOLOGNA_PATH_MARKER)
+    qstr = urlencode({"lang": lang, "curSunit": raw_id})
+    out: list[str] = []
+    for name in _SHOWPAC_PROG_TAB_STEMS:
+        u = f"{bologna_prefix.rstrip('/')}/{name}.aspx?{qstr}"
+        nu = normalize_obs_url(u, u)
+        if nu and _preferred_lang(nu, target_lang):
+            out.append(nu)
+    return out
 
 
 def _urls_from_html_regex(html: str, base: str) -> tuple[set[str], set[str]]:
@@ -369,6 +463,29 @@ def _urls_from_html_regex(html: str, base: str) -> tuple[set[str], set[str]]:
     bologna_base = f"https://{OBS_HOST}{BOLOGNA_PATH_MARKER}"
     for m in _DYNCON_RE.finditer(clean):
         path = m.group(0)
+        nu = normalize_obs_url(urljoin(bologna_base, path), base)
+        if nu:
+            other.add(nu)
+    for m in _PROG_ASPX_ABS_RE.finditer(clean):
+        nu = normalize_obs_url(m.group(0).strip(), base)
+        if nu:
+            other.add(nu)
+    for m in _PROG_ASPX_REL_RE.finditer(clean):
+        path = m.group(0)
+        nu = normalize_obs_url(urljoin(bologna_base, path), base)
+        if nu:
+            other.add(nu)
+    for m in _BOLOGNA_ANY_ASPX_ABS_RE.finditer(clean):
+        raw = m.group(0).strip()
+        if "/program.aspx" in raw.lower():
+            continue
+        nu = normalize_obs_url(raw, base)
+        if nu:
+            other.add(nu)
+    for m in _BOLOGNA_ANY_ASPX_REL_RE.finditer(clean):
+        path = m.group(1)
+        if path.lower().startswith("program."):
+            continue
         nu = normalize_obs_url(urljoin(bologna_base, path), base)
         if nu:
             other.add(nu)
@@ -644,6 +761,7 @@ def _expand_showpac_sections_and_capture_html(driver: WebDriver, delay: float) -
     Intentionally does **not** run the index-scale ``__doPostBack`` expander (that
     made each programme page take many minutes).
     """
+    max_sidebar = _showpac_sidebar_click_cap()
     snapshots: list[str] = []
 
     def capture() -> None:
@@ -660,15 +778,15 @@ def _expand_showpac_sections_and_capture_html(driver: WebDriver, delay: float) -
     scored.sort(key=lambda it: it[0])
 
     priority = [el for rk, el in scored if rk[0] == 0]
-    fallback = [el for rk, el in scored if rk[0] != 0][: max(0, _MAX_SHOWPAC_SIDEBAR_CLICKS - len(priority))]
-    candidates = (priority + fallback)[:_MAX_SHOWPAC_SIDEBAR_CLICKS]
+    fallback = [el for rk, el in scored if rk[0] != 0][: max(0, max_sidebar - len(priority))]
+    candidates = (priority + fallback)[:max_sidebar]
 
     nav_sleep = min(_SHOWPAC_NAV_CLICK_SLEEP, max(0.08, float(delay) * 0.12))
     clicked_fp: set[tuple[str, str]] = set()
     clicks = 0
 
     for el in candidates:
-        if clicks >= _MAX_SHOWPAC_SIDEBAR_CLICKS:
+        if clicks >= max_sidebar:
             break
         try:
             onclick = (el.get_attribute("onclick") or "").strip()
@@ -859,9 +977,7 @@ def collect_bologna_urls(
     """
     skip_parts = list(skip_section_parts or [])
     base = BOLOGNA_INDEX_URL
-    all_showpac: set[str] = {
-        u for u in BOLOGNA_SEED_URLS if _preferred_lang(u, target_lang)
-    }
+    all_showpac: set[str] = set()
     all_other: set[str] = set()
     all_other.add(BOLOGNA_INDEX_URL)
 
@@ -871,8 +987,7 @@ def collect_bologna_urls(
         wait_for_page_ready(driver)
     except WebDriverException as e:
         logger.warning("Initial load failed: %s", e)
-        fallback = [u for u in BOLOGNA_SEED_URLS if _preferred_lang(u, target_lang)]
-        return [BOLOGNA_INDEX_URL, *fallback]
+        return [BOLOGNA_INDEX_URL]
 
     clicked_fingerprints: set[tuple[str, str, str]] = set()
 
@@ -914,10 +1029,7 @@ def collect_bologna_urls(
         for u in ot:
             if u not in seen_section and _preferred_lang(u, target_lang):
                 all_other.add(u)
-                if u not in section_queue and (
-                    "dynconpage" in u.lower()
-                    or "unitselection" in u.lower()
-                ):
+                if u not in section_queue and _should_queue_bologna_section(u):
                     section_queue.append(u)
 
         spx, otx = _urls_from_html_regex(driver.page_source, driver.current_url or base)
@@ -978,8 +1090,13 @@ def fetch_page_extract(
     retries: int = 1,
     *,
     target_lang: str = "en",
-) -> tuple[str, str, list[str]]:
-    """Navigate to url and return (title, text, embedding_units)."""
+) -> tuple[str, str, list[str], list[str]]:
+    """Navigate to url and return (title, text, embedding_units, followup_urls).
+
+    followup_urls: Bologna HTTP URLs seen in this page's HTML (e.g. progCourses.aspx
+    in a showPac footer). They are not in collect_bologna_urls() until this page loads;
+    scrape_obs_bologna runs a second pass to fetch them.
+    """
     last_exc: Exception | None = None
     for attempt in range(retries + 1):
         try:
@@ -989,11 +1106,13 @@ def fetch_page_extract(
             wait_for_page_ready(driver, timeout=_page_ready_timeout_for_url(url))
             html = driver.page_source
             title, text, units = extract_title_text_and_embedding_units(html)
+            html_for_links = html
             # showPac pages are mostly a nav shell; dynConPage bodies carry programme text.
             # Use HTTP (not extra Selenium navigations) so Docker without Chrome still works.
             if "showpac" in (url or "").lower():
                 nav_html = _expand_showpac_sections_and_capture_html(driver, max(0.05, delay / 2))
                 html_for_dyncon = f"{html}\n\n{nav_html}" if nav_html else html
+                html_for_links = html_for_dyncon
                 extra = append_showpac_dyncon_via_http(
                     html_for_dyncon,
                     url,
@@ -1002,13 +1121,121 @@ def fetch_page_extract(
                 )
                 if extra:
                     text = f"{(text or '').strip()}\n\n{extra}".strip()
+            base_for_regex = driver.current_url or url
+            sp_links, ot_links = _urls_from_html_regex(html_for_links, base_for_regex)
+            synth = (
+                synthetic_prog_followups_from_showpac_url(url, target_lang or "en")
+                if "showpac" in (url or "").lower()
+                else []
+            )
+            followups = sorted(
+                {
+                    u
+                    for u in (sp_links | ot_links | set(synth))
+                    if u and _preferred_lang(u, target_lang or "en")
+                }
+            )
             if not title:
                 title = url[:500]
-            return title, text, units
+            return title, text, units, followups
         except WebDriverException as e:
             last_exc = e
             logger.warning("fetch_page_extract attempt %s failed for %s: %s", attempt, url, e)
             time.sleep(delay)
     if last_exc:
         logger.warning("Giving up on %s: %s", url, last_exc)
-    return url[:500], "", []
+    return url[:500], "", [], []
+
+
+def run_backfill_obs_prog_tabs_http(
+    *,
+    limit: int = 0,
+    force: bool = False,
+    dry_run: bool = False,
+    delay: float = 0.08,
+    target_lang: str = "en",
+    on_notice: Callable[[str], None] | None = None,
+    on_saved: Callable[[str], None] | None = None,
+    on_warn: Callable[[str], None] | None = None,
+) -> tuple[int, int, int, int, int]:
+    """
+    Upsert synthesized ``prog*.aspx`` pages from DB showPac shells (HTTP only).
+
+    Callbacks receive single-line messages (caller adds styling). Intended to run after
+    a full ``scrape_obs_bologna`` pass to plug gaps missed by the second scrape round.
+
+    Returns ``(n_showpac_shells_scanned, n_unique_prog_urls, saved, skipped, failed)``.
+    """
+    from core.models import Page
+
+    def _notice(msg: str) -> None:
+        if on_notice:
+            on_notice(msg)
+
+    def _saved(msg: str) -> None:
+        if on_saved:
+            on_saved(msg)
+
+    def _warn(msg: str) -> None:
+        logger.warning(msg)
+        if on_warn:
+            on_warn(msg)
+
+    lang = (target_lang or "en").strip().lower() or "en"
+    qs = Page.objects.filter(source=SOURCE_LABEL).filter(url__icontains="showpac").order_by(
+        "id"
+    )
+    if limit:
+        qs = qs[: max(1, int(limit))]
+
+    targets: set[str] = set()
+    n_shells = 0
+    for p in qs:
+        n_shells += 1
+        targets.update(synthetic_prog_followups_from_showpac_url(p.url or "", lang))
+
+    _notice(
+        f"showPac rows scanned: {n_shells}; unique synthetic prog URLs: {len(targets)}",
+    )
+    if dry_run:
+        for u in sorted(targets)[:30]:
+            _notice(f"  [dry-run] {u}")
+        if len(targets) > 30:
+            _notice(f"  … +{len(targets) - 30} more")
+        return n_shells, len(targets), 0, 0, 0
+
+    saved = skipped = failed = 0
+    for prog_url in sorted(targets):
+        ex = Page.objects.filter(url=prog_url, source=SOURCE_LABEL).first()
+        if ex and (ex.content or "").strip() and not force:
+            skipped += 1
+            continue
+        try:
+            title, text, units = fetch_page_extract_http(
+                prog_url, delay=max(0.02, float(delay)), target_lang=lang
+            )
+        except Exception as e:
+            failed += 1
+            _warn(f"backfill OBS prog tab failed {prog_url}: {e}")
+            continue
+        if not (text or "").strip():
+            _warn(f"Empty body, skipped upsert: {prog_url}")
+            failed += 1
+            continue
+        Page.objects.update_or_create(
+            url=prog_url,
+            defaults={
+                "title": title or prog_url[:500],
+                "content": text,
+                "embedding_units": units or None,
+                "source": SOURCE_LABEL,
+            },
+        )
+        saved += 1
+        _saved(f"Saved (backfill): {prog_url}")
+
+    _notice(
+        f"prog-tab backfill done: saved={saved}, skipped_already_had_body={skipped}, "
+        f"failed_or_empty={failed}",
+    )
+    return n_shells, len(targets), saved, skipped, failed

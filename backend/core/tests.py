@@ -4,7 +4,9 @@ These tests are designed to run without Django/PostgreSQL dependencies.
 Run with: python -m unittest core.tests -v
 """
 
+import os
 import unittest
+from unittest.mock import patch
 from urllib.parse import urldefrag, urlparse
 
 from core.chunking import chunk_text, chunks_for_embedding
@@ -337,6 +339,152 @@ class NormalizeObsUrlTests(unittest.TestCase):
             base,
         )
         self.assertNotIn("#", u)
+
+    def test_progcourses_absolute(self):
+        from core.obs_bologna_scraper import normalize_obs_url
+
+        base = "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en"
+        u = normalize_obs_url(
+            "https://obs.acibadem.edu.tr/oibs/bologna/progCourses.aspx?lang=en&curSunit=6246",
+            base,
+        )
+        self.assertTrue(u)
+        self.assertIn("progCourses", u)
+
+    def test_progcourses_relative_join(self):
+        from core.obs_bologna_scraper import normalize_obs_url
+
+        base = "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en"
+        u = normalize_obs_url("progCourses.aspx?lang=en&curSunit=1", base)
+        self.assertTrue(u)
+        self.assertIn("/oibs/bologna/", u)
+
+    def test_prog_goals_objectives_absolute(self):
+        from core.obs_bologna_scraper import normalize_obs_url
+
+        base = "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en"
+        u = normalize_obs_url(
+            "https://obs.acibadem.edu.tr/oibs/bologna/progGoalsObjectives.aspx?lang=en&curSunit=6166",
+            base,
+        )
+        self.assertTrue(u)
+        self.assertIn("progGoalsObjectives", u)
+
+
+class UrlsFromHtmlRegexProgAspxTests(unittest.TestCase):
+    """prog*.aspx (progCourses, progAbout, progGoalsObjectives, …) in JS/viewstate."""
+
+    def test_finds_relative_progcourses(self):
+        from core.obs_bologna_scraper import _urls_from_html_regex
+
+        base = "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en"
+        html = "<html><body>foo progCourses.aspx?lang=en&amp;curSunit=6246 bar</body></html>"
+        _sp, ot = _urls_from_html_regex(html, base)
+        self.assertTrue(any("progCourses" in u for u in ot))
+
+    def test_finds_relative_prog_about_and_goals(self):
+        from core.obs_bologna_scraper import _urls_from_html_regex
+
+        base = "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en"
+        html = (
+            "<html><body>"
+            "progAbout.aspx?lang=en&amp;curSunit=6166 "
+            "progGoalsObjectives.aspx?lang=en&amp;curSunit=6166"
+            "</body></html>"
+        )
+        _sp, ot = _urls_from_html_regex(html, base)
+        self.assertTrue(any("progAbout" in u for u in ot))
+        self.assertTrue(any("progGoalsObjectives" in u for u in ot))
+
+    def test_finds_absolute_progcourses(self):
+        from core.obs_bologna_scraper import _urls_from_html_regex
+
+        base = "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en"
+        html = (
+            "<html><body>"
+            "https://obs.acibadem.edu.tr/oibs/bologna/progCourses.aspx?lang=en&curSunit=99"
+            "</body></html>"
+        )
+        _sp, ot = _urls_from_html_regex(html, base)
+        self.assertTrue(any("progCourses" in u for u in ot))
+
+    def test_does_not_match_program_dot_aspx(self):
+        from core.obs_bologna_scraper import _urls_from_html_regex
+
+        base = "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en"
+        html = "<html><body>program.aspx?x=1</body></html>"
+        _sp, ot = _urls_from_html_regex(html, base)
+        self.assertFalse(any("program.aspx" in u for u in ot))
+
+    def test_unknown_bologna_aspx_name_caught_by_loose_pattern(self):
+        """Future OBS page types: any filename.aspx? under bologna without new regex."""
+        from core.obs_bologna_scraper import _urls_from_html_regex
+
+        base = "https://obs.acibadem.edu.tr/oibs/bologna/index.aspx?lang=en"
+        html = (
+            "<html><body>facNewPageType.aspx?lang=en&amp;curSunit=123"
+            " https://obs.acibadem.edu.tr/oibs/bologna/OtherTool.aspx?lang=en"
+            "</body></html>"
+        )
+        _sp, ot = _urls_from_html_regex(html, base)
+        self.assertTrue(
+            any("facNewPageType" in u for u in ot),
+            msg=f"expected facNewPageType in {ot!r}",
+        )
+        self.assertTrue(any("OtherTool" in u for u in ot))
+
+
+class ObsSyntheticProgFollowupsTests(unittest.TestCase):
+    """synthetic_prog_followups_from_showpac_url (no Selenium)."""
+
+    def test_includes_progcourses_for_cur_sunit(self):
+        from core.obs_bologna_scraper import synthetic_prog_followups_from_showpac_url
+
+        show = (
+            "https://obs.acibadem.edu.tr/oibs/bologna/"
+            "index.aspx?lang=en&curOp=showPac&curUnit=09&curSunit=6166"
+        )
+        urls = synthetic_prog_followups_from_showpac_url(show, target_lang="en")
+        pc = [
+            u
+            for u in urls
+            if "progCourses.aspx" in u and "6166" in u and "lang=en" in u.lower()
+        ]
+        self.assertTrue(len(pc) >= 1, msg=f"missing progCourses 6166 in {urls!r}")
+
+    def test_non_showpac_returns_empty(self):
+        from core.obs_bologna_scraper import synthetic_prog_followups_from_showpac_url
+
+        u = "https://obs.acibadem.edu.tr/oibs/bologna/progCourses.aspx?lang=en&curSunit=6166"
+        self.assertEqual(synthetic_prog_followups_from_showpac_url(u, "en"), [])
+
+
+class ObsShowpacSidebarEnvTests(unittest.TestCase):
+    """OBS_SHOWPAC_SIDEBAR_CLICKS bounds (no network)."""
+
+    def test_default_sidebar_cap_when_unset(self):
+        from core.obs_bologna_scraper import _showpac_sidebar_click_cap
+
+        prev = os.environ.pop("OBS_SHOWPAC_SIDEBAR_CLICKS", None)
+        try:
+            self.assertEqual(_showpac_sidebar_click_cap(), 12)
+        finally:
+            if prev is not None:
+                os.environ["OBS_SHOWPAC_SIDEBAR_CLICKS"] = prev
+
+    def test_sidebar_cap_from_env(self):
+        from core.obs_bologna_scraper import _showpac_sidebar_click_cap
+
+        with patch.dict(os.environ, {"OBS_SHOWPAC_SIDEBAR_CLICKS": "6"}):
+            self.assertEqual(_showpac_sidebar_click_cap(), 6)
+
+    def test_sidebar_cap_clamped_to_bounds(self):
+        from core.obs_bologna_scraper import _showpac_sidebar_click_cap
+
+        with patch.dict(os.environ, {"OBS_SHOWPAC_SIDEBAR_CLICKS": "99"}):
+            self.assertEqual(_showpac_sidebar_click_cap(), 12)
+        with patch.dict(os.environ, {"OBS_SHOWPAC_SIDEBAR_CLICKS": "3"}):
+            self.assertEqual(_showpac_sidebar_click_cap(), 4)
 
 
 class TestRagQueryExpand(unittest.TestCase):

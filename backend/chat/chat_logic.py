@@ -103,6 +103,9 @@ def run_chat_completion(body: dict) -> JsonResponse:
         ]
 
     ollama_opts = _ollama_rag_options(user_llm, rag_meta)
+    direct_reply = (rag_meta.get("direct_reply") or "").strip()
+    if direct_reply:
+        return JsonResponse({"reply": direct_reply, "rag": rag_meta})
     reply_text, err = call_llm(ollama_messages, ollama_options=ollama_opts)
     if err:
         status = 504 if "timeout" in err.lower() or "timed out" in err.lower() else 502
@@ -142,6 +145,18 @@ def _chat_with_db(body: dict, client_uuid: uuid.UUID) -> JsonResponse:
         title_changed = True
 
     ollama_opts = _ollama_rag_options(user_llm, rag_meta)
+    direct_reply = (rag_meta.get("direct_reply") or "").strip()
+    if direct_reply:
+        ChatMessage.objects.create(session=session, role="assistant", content=direct_reply)
+        session.save()
+        return JsonResponse(
+            {
+                "reply": direct_reply,
+                "session_id": str(session.id),
+                "title": session.title,
+                "rag": rag_meta,
+            }
+        )
     reply_text, err = call_llm(ollama_messages, ollama_options=ollama_opts)
     if err:
         user_row.delete()

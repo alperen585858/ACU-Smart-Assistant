@@ -18,6 +18,20 @@ RAG_SNIPPET_CHARS = min(
     max(400, int(os.environ.get("RAG_SNIPPET_CHARS", "700"))),
     RAG_MAX_CHARS,
 )
+# Wider OBS curriculum window so merged course tables + other tabs fit.
+RAG_CURRICULUM_CONTEXT_MAX_CHARS = max(
+    RAG_MAX_CHARS, int(os.environ.get("RAG_CURRICULUM_CONTEXT_MAX_CHARS", "14000")),
+)
+# Longer slices for Bologna progCourses / matrix tables (course codes span many lines).
+RAG_CURRICULUM_SNIPPET_CHARS = min(
+    max(1200, int(os.environ.get("RAG_CURRICULUM_SNIPPET_CHARS", "2400"))),
+    RAG_CURRICULUM_CONTEXT_MAX_CHARS,
+)
+# Merged full-page text for progCourses/matrix (embeddings use ~700-char shards).
+RAG_CURRICULUM_MERGED_SNIPPET_CHARS = min(
+    max(4000, int(os.environ.get("RAG_CURRICULUM_MERGED_SNIPPET_CHARS", "10000"))),
+    500_000,
+)
 
 # Recall-oriented (multi-embed, wide pool, rerank, optional lexical on Postgres)
 RAG_MULTI_EMBED = _env_bool("RAG_MULTI_EMBED", "false")
