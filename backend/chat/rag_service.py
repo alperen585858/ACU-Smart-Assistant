@@ -18,7 +18,7 @@ from core.rag_keywords import (
     international_application_requirements_page_intent,
     international_student_apply_intent,
 )
-from core.rag_retrieval import search_document_chunks
+from core.rag_retrieval import _CE_CURRICULUM_QUERY_RE, search_document_chunks
 
 from .message_utils import trim_message_for_llm
 
@@ -109,7 +109,16 @@ SYSTEM_RAG_USER_WRAPPER = (
     "(14) “Who is [Name]?” / biography: use every role, title, department, unit, and education line about that "
     "person that appears in the excerpts—summarize them in clear prose; do not stop at “is on academic staff” "
     "if the excerpts list chair, Assoc. Prof., research, email, or duties. If excerpts only mention the name "
-    "in a list without a biography, say briefly what role is stated and quote the page type (e.g. committee list)."
+    "in a list without a biography, say briefly what role is stated and quote the page type (e.g. committee list). "
+    "(15) Bologna / programme “courses”, “lessons”, curriculum, müfredat: if excerpts contain a semester plan or "
+    "course table with codes and titles, list representative courses from that table (bullets or short lines); "
+    "each bullet should look like a real module: include the course code and title as printed (e.g. CSE 101 — …). "
+    "Never label curSunit, SUnit, or similar URL tokens as separate undergraduate programmes or “two curricula”. "
+    "Do not treat psychology/survey-style row labels (e.g. “relation level”, “numerical/verbal relation”, "
+    "“presence of relationship”) as degree courses unless the same line clearly includes a departmental course code. "
+    "Bologna may mirror the same degree under different internal tab IDs—unless the prose explicitly compares tracks, "
+    "describe one programme. When both generic mission text and a course list appear, the course list answers "
+    "“what is taught”."
 )
 
 SYSTEM_SMALLTALK = (
@@ -468,6 +477,18 @@ def prepare_chat_prompts(rag_query: str, user_plain: str) -> tuple[str, str, dic
                 "\n\nThe user asked about a degree, engineering discipline, or program. If the excerpts "
                 "name that program in English or Turkish, answer from those lines only; say it is not "
                 "mentioned only if neither the English nor Turkish program name appears there."
+            )
+        if _CE_CURRICULUM_QUERY_RE.search(user_plain) or _CE_CURRICULUM_QUERY_RE.search(
+            rag_query
+        ):
+            system += (
+                "\n\nMANDATORY — CURRICULUM / COURSES: The user asked what is taught (courses, lessons, müfredat). "
+                "Lead with bullets taken from progCourses/matrix tables: lines that contain a departmental code "
+                "(letters+digits such as CSE 101, MAT 201). Do NOT open with mission/vision fluff. "
+                "Do NOT say there are ‘two curricula’ or compare SUnits/6166 vs 6246 unless the excerpts explicitly "
+                "state two different programmes. Omit survey/aptitude headings (“relation level”, “presence of relationship”) "
+                "unless they appear on the same table row as a real course code. You may exceed the usual 2–6 sentence "
+                "cap when listing many legitimate courses."
             )
         if RAG_FACULTY_ROSTER_INTENT_RE.search(user_plain) and "faculty listing" in (
             context or ""

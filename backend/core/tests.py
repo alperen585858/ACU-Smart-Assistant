@@ -4,7 +4,9 @@ These tests are designed to run without Django/PostgreSQL dependencies.
 Run with: python -m unittest core.tests -v
 """
 
+import os
 import unittest
+from unittest.mock import patch
 from urllib.parse import urldefrag, urlparse
 
 from core.chunking import chunk_text, chunks_for_embedding
@@ -430,6 +432,59 @@ class UrlsFromHtmlRegexProgAspxTests(unittest.TestCase):
             msg=f"expected facNewPageType in {ot!r}",
         )
         self.assertTrue(any("OtherTool" in u for u in ot))
+
+
+class ObsSyntheticProgFollowupsTests(unittest.TestCase):
+    """synthetic_prog_followups_from_showpac_url (no Selenium)."""
+
+    def test_includes_progcourses_for_cur_sunit(self):
+        from core.obs_bologna_scraper import synthetic_prog_followups_from_showpac_url
+
+        show = (
+            "https://obs.acibadem.edu.tr/oibs/bologna/"
+            "index.aspx?lang=en&curOp=showPac&curUnit=09&curSunit=6166"
+        )
+        urls = synthetic_prog_followups_from_showpac_url(show, target_lang="en")
+        pc = [
+            u
+            for u in urls
+            if "progCourses.aspx" in u and "6166" in u and "lang=en" in u.lower()
+        ]
+        self.assertTrue(len(pc) >= 1, msg=f"missing progCourses 6166 in {urls!r}")
+
+    def test_non_showpac_returns_empty(self):
+        from core.obs_bologna_scraper import synthetic_prog_followups_from_showpac_url
+
+        u = "https://obs.acibadem.edu.tr/oibs/bologna/progCourses.aspx?lang=en&curSunit=6166"
+        self.assertEqual(synthetic_prog_followups_from_showpac_url(u, "en"), [])
+
+
+class ObsShowpacSidebarEnvTests(unittest.TestCase):
+    """OBS_SHOWPAC_SIDEBAR_CLICKS bounds (no network)."""
+
+    def test_default_sidebar_cap_when_unset(self):
+        from core.obs_bologna_scraper import _showpac_sidebar_click_cap
+
+        prev = os.environ.pop("OBS_SHOWPAC_SIDEBAR_CLICKS", None)
+        try:
+            self.assertEqual(_showpac_sidebar_click_cap(), 12)
+        finally:
+            if prev is not None:
+                os.environ["OBS_SHOWPAC_SIDEBAR_CLICKS"] = prev
+
+    def test_sidebar_cap_from_env(self):
+        from core.obs_bologna_scraper import _showpac_sidebar_click_cap
+
+        with patch.dict(os.environ, {"OBS_SHOWPAC_SIDEBAR_CLICKS": "6"}):
+            self.assertEqual(_showpac_sidebar_click_cap(), 6)
+
+    def test_sidebar_cap_clamped_to_bounds(self):
+        from core.obs_bologna_scraper import _showpac_sidebar_click_cap
+
+        with patch.dict(os.environ, {"OBS_SHOWPAC_SIDEBAR_CLICKS": "99"}):
+            self.assertEqual(_showpac_sidebar_click_cap(), 12)
+        with patch.dict(os.environ, {"OBS_SHOWPAC_SIDEBAR_CLICKS": "3"}):
+            self.assertEqual(_showpac_sidebar_click_cap(), 4)
 
 
 class TestRagQueryExpand(unittest.TestCase):
