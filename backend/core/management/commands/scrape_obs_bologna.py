@@ -48,8 +48,8 @@ class Command(BaseCommand):
         parser.add_argument(
             "--delay",
             type=float,
-            default=0.5,
-            help="Seconds to sleep after each navigation or JS-triggering click (default: 0.5).",
+            default=1.0,
+            help="Seconds to sleep after each navigation or JS-triggering click (default: 1.0).",
         )
         parser.add_argument(
             "--max-programs",

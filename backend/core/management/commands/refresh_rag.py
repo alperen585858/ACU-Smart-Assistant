@@ -40,8 +40,8 @@ class Command(BaseCommand):
         parser.add_argument(
             "--obs-delay",
             type=float,
-            default=0.5,
-            help="Delay for OBS Bologna Selenium scraping.",
+            default=1.0,
+            help="Delay for OBS Bologna Selenium scraping (seconds between navigations/clicks; default 1.0).",
         )
         parser.add_argument(
             "--obs-max-programs",
