@@ -123,11 +123,11 @@ def call_llm(
 
     elapsed = round(time.time() - start, 2)
     if err:
-        logger.warning("LLM error: backend=%s, elapsed=%.2fs, error=%s", backend, elapsed, err[:200])
+        logger.warning("LLM error: backend=ollama, elapsed=%.2fs, error=%s", elapsed, err[:200])
         return reply, err
     if not reply:
-        logger.warning("LLM empty response: backend=%s, elapsed=%.2fs", backend, elapsed)
+        logger.warning("LLM empty response: backend=ollama, elapsed=%.2fs", elapsed)
         return reply, err
 
-    logger.info("LLM reply: backend=%s, elapsed=%.2fs, chars=%d", backend, elapsed, len(reply))
+    logger.info("LLM reply: backend=ollama, elapsed=%.2fs, chars=%d", elapsed, len(reply))
     return _sanitize_assistant_reply(reply), None
