@@ -5,7 +5,6 @@ metadata:
   namespace: acu-smart-assistant
 data:
   DEBUG: "true"
-  LLM_BACKEND: "ollama"
 
   POSTGRES_USER: "acu"
   POSTGRES_DB: "acu_chatbot"
